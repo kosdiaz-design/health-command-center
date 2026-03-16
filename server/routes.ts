@@ -3,8 +3,9 @@ import { type Server } from "http";
 import { storage } from "./storage";
 import { insertHealthStatsSchema, insertWorkoutSchema, insertRecoverySessionSchema, insertMealSchema, insertMedicationSchema, insertMedLogSchema, insertLabResultSchema, insertDoctorVisitSchema, insertCardiacEventSchema, insertVoiceNoteSchema } from "@shared/schema";
 import multer from "multer";
-import pdfParse from "pdf-parse";
 // Uses global fetch (Node 18+)
+// pdf-parse is NOT used — it breaks with esbuild CJS bundling.
+// pdfjs-dist is loaded via dynamic import() so CJS can import the ESM module at runtime.
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -369,8 +370,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/integrations/quest/upload", upload.single('pdf'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No PDF file uploaded" });
     try {
-      const data = await pdfParse(req.file.buffer);
-      const text = data.text;
+      // Dynamic import of pdfjs-dist (ESM-only, must be imported, not required)
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs' as any);
+      const { getDocument } = pdfjs;
+      const uint8 = new Uint8Array(req.file.buffer);
+      const loadingTask = getDocument({
+        data: uint8,
+        useWorkerFetch: false,
+        isEvalSupported: false,
+        disableWorker: true,
+      });
+      const pdf = await loadingTask.promise;
+      let text = '';
+      for (let p = 1; p <= pdf.numPages; p++) {
+        const page = await pdf.getPage(p);
+        const content = await page.getTextContent();
+        const pageText = (content.items as any[]).map((item: any) => item.str || '').join(' ');
+        text += pageText + '\n';
+      }
       const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
       const imported: any[] = [];
 

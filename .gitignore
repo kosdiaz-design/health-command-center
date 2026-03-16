@@ -1,0 +1,18 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+
+# SQLite database — stored in Railway Volume at /data
+# Do NOT commit the DB file; Railway Volume persists it across deploys
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Environment variables — never commit real credentials
+.env
+.env.local
+.env.*.local

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Connecting...</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d1a1f; color: #7dd3d8; font-family: system-ui, sans-serif;
+           display: flex; align-items: center; justify-content: center; height: 100vh; }
+    .card { text-align: center; padding: 40px; max-width: 400px; }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h2 { color: #4fd1c7; font-size: 20px; margin-bottom: 8px; }
+    p { color: #7dd3d8; font-size: 14px; opacity: 0.8; }
+    .error { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon" id="icon">⏳</div>
+    <h2 id="title">Connecting...</h2>
+    <p id="msg">Completing authorization, please wait.</p>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    const state = params.get('state'); // 'oura' or 'withings'
+    const error = params.get('error');
+
+    function done(ok, msg) {
+      document.getElementById('icon').textContent = ok ? '✓' : '✗';
+      document.getElementById('title').textContent = ok ? (state === 'oura' ? 'Oura Connected!' : 'Withings Connected!') : 'Connection Failed';
+      document.getElementById('title').style.color = ok ? '#4fd1c7' : '#f87171';
+      document.getElementById('msg').textContent = msg;
+      if (ok) setTimeout(() => window.close(), 2000);
+    }
+
+    if (error) {
+      done(false, 'Authorization was denied: ' + error);
+    } else if (!code) {
+      done(false, 'No authorization code received.');
+    } else {
+      const redirectUri = window.location.origin + '/oauth-callback.html';
+      const endpoint = state === 'withings'
+        ? '/api/integrations/withings/token'
+        : '/api/integrations/oura/token';
+
+      fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, redirectUri })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          done(true, 'Your data will sync automatically. This window will close shortly.');
+        } else {
+          done(false, data.error || 'Token exchange failed. Check server logs.');
+        }
+      })
+      .catch(e => done(false, 'Network error: ' + e.message));
+    }
+  </script>
+</body>
+</html>

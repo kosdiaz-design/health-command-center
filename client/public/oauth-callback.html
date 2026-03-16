@@ -55,7 +55,8 @@
         if (data.success) {
           done(true, 'Your data will sync automatically. This window will close shortly.');
         } else {
-          done(false, data.error || 'Token exchange failed. Check server logs.');
+          const detail = data.detail ? JSON.stringify(data.detail) : '';
+          done(false, (data.error || 'Token exchange failed') + (detail ? ': ' + detail : ''));
         }
       })
       .catch(e => done(false, 'Network error: ' + e.message));

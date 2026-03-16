@@ -282,28 +282,83 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Apple Health CSV Upload ───────────────────────────────────────────────
   // Accepts JSON body parsed from Health Export CSV format
+  // Also captures Quest/lab values that sync into Apple Health
   app.post("/api/integrations/apple-health/upload", async (req, res) => {
     const { rows } = req.body as { rows: Array<Record<string, string>> };
     if (!rows || !Array.isArray(rows)) return res.status(400).json({ error: "Expected { rows: [...] }" });
     let synced = 0;
+    let labsSynced = 0;
+
+    // Lab value mappings from Apple Health field names (incl. Quest sync)
+    const labMappings: Array<{ field: string; testName: string; unit: string; refLow?: number; refHigh?: number }> = [
+      { field: "Blood Glucose (mg/dL)", testName: "Fasting Glucose", unit: "mg/dL", refLow: 70, refHigh: 100 },
+      { field: "Total Cholesterol (mg/dL)", testName: "Total Cholesterol", unit: "mg/dL", refLow: 0, refHigh: 200 },
+      { field: "LDL Cholesterol (mg/dL)", testName: "LDL Cholesterol", unit: "mg/dL", refLow: 0, refHigh: 130 },
+      { field: "HDL Cholesterol (mg/dL)", testName: "HDL Cholesterol", unit: "mg/dL", refLow: 40, refHigh: 999 },
+      { field: "Triglycerides (mg/dL)", testName: "Triglycerides", unit: "mg/dL", refLow: 0, refHigh: 150 },
+      { field: "Hemoglobin A1C (%)", testName: "HbA1c", unit: "%", refLow: 0, refHigh: 5.7 },
+      { field: "Insulin (µIU/mL)", testName: "Fasting Insulin", unit: "µIU/mL", refLow: 0, refHigh: 25 },
+      { field: "Creatinine (mg/dL)", testName: "Creatinine", unit: "mg/dL", refLow: 0.7, refHigh: 1.3 },
+      { field: "Sodium (mEq/L)", testName: "Sodium", unit: "mEq/L", refLow: 136, refHigh: 145 },
+      { field: "Potassium (mEq/L)", testName: "Potassium", unit: "mEq/L", refLow: 3.5, refHigh: 5.1 },
+      { field: "Testosterone (ng/dL)", testName: "Testosterone (Total)", unit: "ng/dL", refLow: 300, refHigh: 1000 },
+      { field: "TSH (mIU/L)", testName: "TSH", unit: "mIU/L", refLow: 0.4, refHigh: 4.0 },
+      { field: "C-Reactive Protein (mg/L)", testName: "hsCRP", unit: "mg/L", refLow: 0, refHigh: 3.0 },
+      { field: "Vitamin D (ng/mL)", testName: "Vitamin D (25-OH)", unit: "ng/mL", refLow: 30, refHigh: 100 },
+      { field: "Ferritin (ng/mL)", testName: "Ferritin", unit: "ng/mL", refLow: 12, refHigh: 300 },
+      { field: "Hemoglobin (g/dL)", testName: "Hemoglobin", unit: "g/dL", refLow: 13.5, refHigh: 17.5 },
+    ];
+
     for (const row of rows) {
       const date = row["Date"] || row["date"];
       if (!date) continue;
-      const isoDate = date.split(' ')[0]; // strip time if present
-      await storage.upsertHealthStatsByDate(isoDate, {
-        date: isoDate,
-        weight: row["Body Mass (lb)"] ? parseFloat(row["Body Mass (lb)"]) : undefined,
-        restingHr: row["Resting Heart Rate (count/min)"] ? Math.round(parseFloat(row["Resting Heart Rate (count/min)"])) : undefined,
-        hrv: row["Heart Rate Variability (ms)"] ? Math.round(parseFloat(row["Heart Rate Variability (ms)"])) : undefined,
-        steps: row["Step Count (count)"] ? Math.round(parseFloat(row["Step Count (count)"])) : undefined,
-        vo2max: row["VO2 Max (mL/min·kg)"] ? parseFloat(row["VO2 Max (mL/min·kg)"]) : undefined,
-        bodyFat: row["Body Fat Percentage (%)"] ? parseFloat(row["Body Fat Percentage (%)"]) : undefined,
-        systolic: row["Blood Pressure Systolic (mmHg)"] ? Math.round(parseFloat(row["Blood Pressure Systolic (mmHg)"])) : undefined,
-        diastolic: row["Blood Pressure Diastolic (mmHg)"] ? Math.round(parseFloat(row["Blood Pressure Diastolic (mmHg)"])) : undefined,
-      });
-      synced++;
+      const isoDate = date.split(' ')[0];
+
+      // Health stats (vitals, biometrics)
+      const hasVitalData = [
+        "Body Mass (lb)", "Resting Heart Rate (count/min)", "Heart Rate Variability (ms)",
+        "Step Count (count)", "VO2 Max (mL/min·kg)", "Body Fat Percentage (%)",
+        "Blood Pressure Systolic (mmHg)", "Blood Pressure Diastolic (mmHg)"
+      ].some(f => row[f]);
+
+      if (hasVitalData) {
+        await storage.upsertHealthStatsByDate(isoDate, {
+          date: isoDate,
+          weight: row["Body Mass (lb)"] ? parseFloat(row["Body Mass (lb)"]) : undefined,
+          restingHr: row["Resting Heart Rate (count/min)"] ? Math.round(parseFloat(row["Resting Heart Rate (count/min)"])) : undefined,
+          hrv: row["Heart Rate Variability (ms)"] ? Math.round(parseFloat(row["Heart Rate Variability (ms)"])) : undefined,
+          steps: row["Step Count (count)"] ? Math.round(parseFloat(row["Step Count (count)"])) : undefined,
+          vo2max: row["VO2 Max (mL/min·kg)"] ? parseFloat(row["VO2 Max (mL/min·kg)"]) : undefined,
+          bodyFat: row["Body Fat Percentage (%)"] ? parseFloat(row["Body Fat Percentage (%)"]) : undefined,
+          systolic: row["Blood Pressure Systolic (mmHg)"] ? Math.round(parseFloat(row["Blood Pressure Systolic (mmHg)"])) : undefined,
+          diastolic: row["Blood Pressure Diastolic (mmHg)"] ? Math.round(parseFloat(row["Blood Pressure Diastolic (mmHg)"])) : undefined,
+        });
+        synced++;
+      }
+
+      // Lab values (Quest Diagnostics synced via Apple Health, or direct Apple Health labs)
+      for (const lab of labMappings) {
+        const raw = row[lab.field];
+        if (!raw) continue;
+        const value = parseFloat(raw);
+        if (isNaN(value)) continue;
+        const flag = lab.refLow !== undefined && lab.refHigh !== undefined
+          ? (value < lab.refLow ? 'low' : value > lab.refHigh ? 'high' : 'normal')
+          : null;
+        await storage.createLabResult({
+          date: isoDate,
+          testName: lab.testName,
+          value,
+          unit: lab.unit,
+          refLow: lab.refLow ?? null,
+          refHigh: lab.refHigh ?? null,
+          flag,
+          notes: 'Imported from Apple Health',
+        });
+        labsSynced++;
+      }
     }
-    res.json({ success: true, synced, message: `Imported ${synced} rows from Apple Health` });
+    res.json({ success: true, synced, labsSynced, message: `Imported ${synced} vitals rows + ${labsSynced} lab values from Apple Health` });
   });
 
   return httpServer;

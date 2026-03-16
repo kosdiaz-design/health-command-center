@@ -6,11 +6,18 @@ import { Badge } from "@/components/ui/badge";
 import { Heart, Activity, Moon, Zap, Scale, TrendingUp, TrendingDown, Minus, Droplets, Flame, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
-function StatCard({ label, value, unit, icon: Icon, delta, deltaLabel, color, testId }: {
-  label: string; value: string | number | null | undefined; unit?: string; icon: any; delta?: number; deltaLabel?: string; color?: string; testId?: string;
+function formatStatValue(value: string | number | null | undefined, decimals = 0): string | number | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'number') return +value.toFixed(decimals);
+  return value;
+}
+
+function StatCard({ label, value, unit, icon: Icon, delta, deltaLabel, color, testId, decimals = 0 }: {
+  label: string; value: string | number | null | undefined; unit?: string; icon: any; delta?: number; deltaLabel?: string; color?: string; testId?: string; decimals?: number;
 }) {
   const DeltaIcon = !delta ? Minus : delta > 0 ? TrendingUp : TrendingDown;
   const deltaColor = !delta ? "text-muted-foreground" : delta > 0 ? "text-green-500" : "text-red-400";
+  const displayValue = formatStatValue(value, decimals);
   return (
     <Card data-testid={testId} className="bg-card border-card-border">
       <CardContent className="pt-5 pb-4 px-5">
@@ -22,7 +29,7 @@ function StatCard({ label, value, unit, icon: Icon, delta, deltaLabel, color, te
         </div>
         <div className="flex items-end gap-1.5">
           <span className="text-2xl font-semibold tabular-nums" data-testid={`value-${testId}`}>
-            {value ?? "—"}
+            {displayValue ?? "—"}
           </span>
           {unit && <span className="text-sm text-muted-foreground mb-0.5">{unit}</span>}
         </div>
@@ -147,13 +154,13 @@ export default function Dashboard() {
             deltaLabel={latest?.restingHr ? (latest.restingHr < 60 ? "Athletic range" : "Within range") : undefined} />
           <StatCard label="Sleep Score" value={latest?.sleepScore} icon={Moon} testId="stat-sleep"
             deltaLabel={latest?.sleepScore && latest.sleepScore >= 80 ? "Excellent" : latest?.sleepScore && latest.sleepScore >= 65 ? "Good" : "Needs work"} />
-          <StatCard label="Body Weight" value={latest?.weight} unit="lbs" icon={Scale} testId="stat-weight"
+          <StatCard label="Body Weight" value={latest?.weight} unit="lbs" icon={Scale} testId="stat-weight" decimals={1}
             delta={-weightDelta} deltaLabel={`${Math.abs(weightDelta)} lbs vs last week`} />
           <StatCard label="Blood Pressure" value={latest ? `${latest.systolic}/${latest.diastolic}` : null} unit="mmHg" icon={Heart} testId="stat-bp"
             deltaLabel={bpStatus?.label} color={latest?.systolic && latest.systolic >= 130 ? "bg-red-500/15" : "bg-green-500/15"} />
           <StatCard label="Health Score" value={healthScore} unit="/100" icon={Zap} testId="stat-health-score"
             deltaLabel="Composite index" />
-          <StatCard label="Body Fat" value={latest?.bodyFat} unit="%" icon={TrendingDown} testId="stat-bodyfat" />
+          <StatCard label="Body Fat" value={latest?.bodyFat} unit="%" icon={TrendingDown} testId="stat-bodyfat" decimals={1} />
           <StatCard label="Steps Today" value={latest?.steps?.toLocaleString()} icon={Activity} testId="stat-steps" />
         </div>
       )}

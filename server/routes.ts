@@ -243,37 +243,87 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Withings sync — pull weight & BP into health stats
+  // ── Withings token refresh helper ──────────────────────────────────────────
+  async function refreshWithingsToken(): Promise<string | null> {
+    const token = await storage.getIntegrationToken('withings');
+    if (!token) return null;
+    // Refresh if expires within 10 minutes
+    if (token.expiresAt && token.expiresAt - Date.now() > 10 * 60 * 1000) return token.accessToken;
+    try {
+      const refreshRes = await fetch("https://wbsapi.withings.net/v2/oauth2", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          action: "requesttoken",
+          grant_type: "refresh_token",
+          client_id: WITHINGS_CLIENT_ID,
+          client_secret: WITHINGS_CLIENT_SECRET,
+          refresh_token: token.refreshToken,
+        }),
+      });
+      const refreshData = await refreshRes.json() as any;
+      if (refreshData.status !== 0) return token.accessToken; // use existing if refresh fails
+      const newTokens = refreshData.body;
+      await storage.setIntegrationToken('withings', {
+        accessToken: newTokens.access_token,
+        refreshToken: newTokens.refresh_token,
+        expiresAt: Date.now() + newTokens.expires_in * 1000,
+        connectedAt: token.connectedAt,
+      });
+      return newTokens.access_token;
+    } catch {
+      return token.accessToken;
+    }
+  }
+
+  // Withings sync — pull weight, body fat & BP into health stats
   app.post("/api/integrations/withings/sync", async (_req, res) => {
     const withingsToken = await storage.getIntegrationToken('withings');
     if (!withingsToken) return res.status(401).json({ error: "Not connected" });
-    const token = withingsToken.accessToken;
+    const token = await refreshWithingsToken() || withingsToken.accessToken;
     const startDate = Math.floor((Date.now() - 30 * 86400000) / 1000);
     try {
-      // meastypes: 1=weight, 9=diastolic, 10=systolic
-      const measRes = await fetch("https://wbsapi.withings.net/measure?action=getmeas&meastypes=1,9,10&category=1&startdate=" + startDate, {
-        headers: { Authorization: `Bearer ${token}` },
+      // Withings measure API — POST with form body
+      // meastypes: 1=weight(kg), 6=body_fat(%), 9=diastolic(mmHg), 10=systolic(mmHg)
+      const measRes = await fetch("https://wbsapi.withings.net/measure", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          action: "getmeas",
+          meastypes: "1,6,9,10",
+          category: "1",
+          startdate: String(startDate),
+        }),
       });
       const data = await measRes.json() as any;
+      if (data.status !== 0) {
+        return res.status(400).json({ error: `Withings API error ${data.status}: ${data.error || 'unknown'}` });
+      }
       const groups = data.body?.measuregrps || [];
-      const byDate = new Map<string, { weight?: number; systolic?: number; diastolic?: number }>();
+      const byDate = new Map<string, { weight?: number; bodyFat?: number; systolic?: number; diastolic?: number }>();
       for (const grp of groups) {
         const date = new Date(grp.date * 1000).toISOString().split('T')[0];
         if (!byDate.has(date)) byDate.set(date, {});
         const entry = byDate.get(date)!;
         for (const m of grp.measures) {
           const val = m.value * Math.pow(10, m.unit);
-          if (m.type === 1) entry.weight = Math.round(val * 2.205 * 10) / 10; // kg → lbs
-          if (m.type === 10) entry.systolic = Math.round(val);
-          if (m.type === 9) entry.diastolic = Math.round(val);
+          if (m.type === 1)  entry.weight  = Math.round(val * 2.20462 * 10) / 10; // kg → lbs, 1 decimal
+          if (m.type === 6)  entry.bodyFat = Math.round(val * 10) / 10;            // % body fat, 1 decimal
+          if (m.type === 10) entry.systolic  = Math.round(val);
+          if (m.type === 9)  entry.diastolic = Math.round(val);
         }
       }
       let synced = 0;
       for (const [date, vals] of byDate.entries()) {
-        await storage.upsertHealthStatsByDate(date, { date, ...vals });
-        synced++;
+        if (Object.keys(vals).length > 0) {
+          await storage.upsertHealthStatsByDate(date, { date, ...vals });
+          synced++;
+        }
       }
-      res.json({ success: true, synced, message: `Synced ${synced} days from Withings` });
+      res.json({ success: true, synced, message: `Synced ${synced} days from Withings (weight, body fat, BP)` });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

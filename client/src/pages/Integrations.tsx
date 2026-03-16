@@ -153,6 +153,82 @@ function IntegrationCard({
   );
 }
 
+// ── Quest PDF uploader ──────────────────────────────────────────────────────
+function QuestPDFCard() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [dragOver, setDragOver] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [lastImport, setLastImport] = useState<{ count: number; date: string; reportDate: string } | null>(null);
+  const [showData, setShowData] = useState(false);
+  const labTypes = ["Glucose","Total Cholesterol","LDL","HDL","Triglycerides","HbA1c","Creatinine","eGFR","TSH","Testosterone","hsCRP","Vitamin D","BNP","Ferritin","Sodium","Potassium"];
+
+  const handleFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      toast({ title: "PDF only", description: "Please upload a .pdf from MyQuest.", variant: "destructive" });
+      return;
+    }
+    setImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append("pdf", file);
+      const response = await fetch("/api/integrations/quest/upload", { method: "POST", body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Upload failed");
+      setLastImport({ count: data.imported, date: new Date().toLocaleTimeString(), reportDate: data.reportDate });
+      queryClient.invalidateQueries({ queryKey: ["/api/lab-results"] });
+      toast({ title: "Import complete", description: data.message });
+    } catch (e: any) {
+      toast({ title: "Import failed", description: e.message, variant: "destructive" });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <Card className="bg-card border-card-border">
+      <CardContent className="p-5">
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl flex-shrink-0 bg-muted/40 border border-card-border">🧪</div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="font-semibold text-sm">Quest Diagnostics</span>
+              <Badge className="text-xs px-1.5 py-0 border-0 bg-muted text-muted-foreground">PDF Upload</Badge>
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">Download your lab results PDF from <strong>MyQuest</strong>, then upload here. Values auto-populate your Health Records with reference ranges.</p>
+            <button onClick={() => setShowData(v => !v)} className="flex items-center gap-1 text-xs text-primary hover:underline mb-3">
+              {showData ? <ChevronUp size={12}/> : <ChevronDown size={12}/>} What data imports
+            </button>
+            {showData && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {labTypes.map(l => <span key={l} className="text-xs bg-primary/10 text-primary rounded-full px-2 py-0.5">{l}</span>)}
+              </div>
+            )}
+            <div
+              onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
+              className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors cursor-pointer mb-3 ${dragOver ? "border-primary bg-primary/5" : "border-card-border hover:border-primary/50"}`}
+              onClick={() => document.getElementById("quest-pdf-file")?.click()}
+              data-testid="dropzone-quest-pdf"
+            >
+              <input id="quest-pdf-file" type="file" accept=".pdf" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+              {importing ? (
+                <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground"><RefreshCw size={14} className="animate-spin"/> Parsing PDF…</div>
+              ) : (
+                <div className="flex flex-col items-center gap-1"><FileUp size={20} className="text-muted-foreground"/><span className="text-xs text-muted-foreground">Drag & drop Quest PDF, or click to browse</span></div>
+              )}
+            </div>
+            {lastImport && (
+              <p className="text-xs text-green-500 flex items-center gap-1"><CheckCircle2 size={12}/> Imported {lastImport.count} lab values from {lastImport.reportDate} at {lastImport.date}</p>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Apple Health CSV uploader ───────────────────────────────────────────────
 function AppleHealthCard() {
   const { toast } = useToast();
@@ -415,6 +491,7 @@ export default function Integrations() {
 
       <div className="space-y-3">
         <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Manual Upload</h2>
+        <QuestPDFCard />
         <AppleHealthCard />
       </div>
 

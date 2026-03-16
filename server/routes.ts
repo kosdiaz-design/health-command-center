@@ -2,7 +2,11 @@ import type { Express } from "express";
 import { type Server } from "http";
 import { storage } from "./storage";
 import { insertHealthStatsSchema, insertWorkoutSchema, insertRecoverySessionSchema, insertMealSchema, insertMedicationSchema, insertMedLogSchema, insertLabResultSchema, insertDoctorVisitSchema, insertCardiacEventSchema, insertVoiceNoteSchema } from "@shared/schema";
+import multer from "multer";
+import pdfParse from "pdf-parse";
 // Uses global fetch (Node 18+)
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const OURA_CLIENT_ID = process.env.OURA_CLIENT_ID || "";
 const OURA_CLIENT_SECRET = process.env.OURA_CLIENT_SECRET || "";
@@ -359,6 +363,77 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     }
     res.json({ success: true, synced, labsSynced, message: `Imported ${synced} vitals rows + ${labsSynced} lab values from Apple Health` });
+  });
+
+  // ── Quest Diagnostics PDF Upload ─────────────────────────────────────────
+  app.post("/api/integrations/quest/upload", upload.single('pdf'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No PDF file uploaded" });
+    try {
+      const data = await pdfParse(req.file.buffer);
+      const text = data.text;
+      const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
+      const imported: any[] = [];
+
+      // Quest PDF format patterns — matches common Quest lab report layouts
+      // Pattern: "Test Name    Value    Units    Reference Range"
+      const labPatterns: Array<{
+        pattern: RegExp;
+        testName: string;
+        unit: string;
+        refLow?: number;
+        refHigh?: number;
+      }> = [
+        { pattern: /glucose[^\d]*(\d+\.?\d*)/i, testName: 'Fasting Glucose', unit: 'mg/dL', refLow: 70, refHigh: 100 },
+        { pattern: /total\s+cholesterol[^\d]*(\d+\.?\d*)/i, testName: 'Total Cholesterol', unit: 'mg/dL', refLow: 0, refHigh: 200 },
+        { pattern: /ldl[^\d]*(\d+\.?\d*)/i, testName: 'LDL Cholesterol', unit: 'mg/dL', refLow: 0, refHigh: 130 },
+        { pattern: /hdl[^\d]*(\d+\.?\d*)/i, testName: 'HDL Cholesterol', unit: 'mg/dL', refLow: 40, refHigh: 999 },
+        { pattern: /triglyceride[^\d]*(\d+\.?\d*)/i, testName: 'Triglycerides', unit: 'mg/dL', refLow: 0, refHigh: 150 },
+        { pattern: /hemoglobin\s+a1c[^\d]*(\d+\.?\d*)/i, testName: 'HbA1c', unit: '%', refLow: 0, refHigh: 5.7 },
+        { pattern: /hba1c[^\d]*(\d+\.?\d*)/i, testName: 'HbA1c', unit: '%', refLow: 0, refHigh: 5.7 },
+        { pattern: /creatinine[^\d]*(\d+\.?\d*)/i, testName: 'Creatinine', unit: 'mg/dL', refLow: 0.7, refHigh: 1.3 },
+        { pattern: /egfr[^\d]*(\d+\.?\d*)/i, testName: 'eGFR', unit: 'mL/min', refLow: 60, refHigh: 999 },
+        { pattern: /tsh[^\d]*(\d+\.?\d*)/i, testName: 'TSH', unit: 'mIU/L', refLow: 0.4, refHigh: 4.0 },
+        { pattern: /testosterone[^\d]*(\d+\.?\d*)/i, testName: 'Testosterone (Total)', unit: 'ng/dL', refLow: 300, refHigh: 1000 },
+        { pattern: /c-reactive\s+protein[^\d]*(\d+\.?\d*)/i, testName: 'hsCRP', unit: 'mg/L', refLow: 0, refHigh: 3.0 },
+        { pattern: /hs-?crp[^\d]*(\d+\.?\d*)/i, testName: 'hsCRP', unit: 'mg/L', refLow: 0, refHigh: 3.0 },
+        { pattern: /vitamin\s+d[^\d]*(\d+\.?\d*)/i, testName: 'Vitamin D (25-OH)', unit: 'ng/mL', refLow: 30, refHigh: 100 },
+        { pattern: /ferritin[^\d]*(\d+\.?\d*)/i, testName: 'Ferritin', unit: 'ng/mL', refLow: 12, refHigh: 300 },
+        { pattern: /hemoglobin[^a][^\d]*(\d+\.?\d*)/i, testName: 'Hemoglobin', unit: 'g/dL', refLow: 13.5, refHigh: 17.5 },
+        { pattern: /sodium[^\d]*(\d+\.?\d*)/i, testName: 'Sodium', unit: 'mEq/L', refLow: 136, refHigh: 145 },
+        { pattern: /potassium[^\d]*(\d+\.?\d*)/i, testName: 'Potassium', unit: 'mEq/L', refLow: 3.5, refHigh: 5.1 },
+        { pattern: /bnp[^\d]*(\d+\.?\d*)/i, testName: 'BNP', unit: 'pg/mL', refLow: 0, refHigh: 100 },
+        { pattern: /insulin[^\d]*(\d+\.?\d*)/i, testName: 'Fasting Insulin', unit: '\u00b5IU/mL', refLow: 0, refHigh: 25 },
+      ];
+
+      // Extract report date from PDF
+      let reportDate = new Date().toISOString().split('T')[0];
+      const dateMatch = text.match(/(?:collection|report|date)[^\n]*?(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+      if (dateMatch) {
+        const parts = dateMatch[1].split(/[\/\-]/);
+        if (parts.length === 3) {
+          const year = parts[2].length === 2 ? '20' + parts[2] : parts[2];
+          reportDate = `${year}-${parts[0].padStart(2,'0')}-${parts[1].padStart(2,'0')}`;
+        }
+      }
+
+      const seenTests = new Set<string>();
+      for (const { pattern, testName, unit, refLow, refHigh } of labPatterns) {
+        if (seenTests.has(testName)) continue;
+        const match = text.match(pattern);
+        if (!match) continue;
+        const value = parseFloat(match[1]);
+        if (isNaN(value)) continue;
+        const flag = refLow !== undefined && refHigh !== undefined
+          ? (value < refLow ? 'low' : value > refHigh ? 'high' : 'normal') : null;
+        await storage.createLabResult({ date: reportDate, testName, value, unit, refLow: refLow ?? null, refHigh: refHigh ?? null, flag, notes: 'Imported from Quest PDF' });
+        imported.push({ testName, value, unit, flag });
+        seenTests.add(testName);
+      }
+
+      res.json({ success: true, imported: imported.length, results: imported, reportDate, message: `Imported ${imported.length} lab values from Quest PDF (${reportDate})` });
+    } catch (e: any) {
+      res.status(500).json({ error: 'PDF parse failed: ' + e.message });
+    }
   });
 
   return httpServer;

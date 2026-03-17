@@ -353,7 +353,7 @@ function AppleHealthCard() {
   const queryClient = useQueryClient();
   const [dragOver, setDragOver] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [lastImport, setLastImport] = useState<{ rows: number; labs: number; cleared: boolean; date: string; cols: string[]; matchedCols: string[]; isLongFormat: boolean; totalRows: number } | null>(null);
+  const [lastImport, setLastImport] = useState<{ rows: number; labs: number; cleared: boolean; date: string; cols: string[]; matchedCols: string[]; isLongFormat: boolean; totalRows: number; rawPreview?: string; fileName?: string } | null>(null);
   const [showData, setShowData] = useState(false);
 
   const dataPoints = ["Weight", "Resting HR", "HRV", "Steps", "VO2 Max", "Body Fat", "Blood Pressure", "Sleep"];
@@ -389,16 +389,26 @@ function AppleHealthCard() {
   };
 
   const handleFile = async (file: File) => {
-    if (!file.name.endsWith(".csv")) {
-      toast({ title: "CSV only", description: "Please upload a .csv file exported from Health Export app.", variant: "destructive" });
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      toast({ title: "CSV only", description: `Got "${file.name}" — please upload a .csv file.`, variant: "destructive" });
       return;
     }
     setImporting(true);
     try {
       const text = await file.text();
+      // Grab first 600 chars raw for diagnostic display
+      const rawPreview = text.slice(0, 600);
       const rows = parseCSV(text);
+
       if (rows.length === 0) {
-        toast({ title: "Empty file", description: "No data rows found in this CSV.", variant: "destructive" });
+        // Show raw content so we can diagnose the format issue
+        setLastImport({
+          rows: 0, labs: 0, cleared: false,
+          date: new Date().toLocaleTimeString(),
+          cols: [], matchedCols: [], isLongFormat: false, totalRows: 0,
+          rawPreview, fileName: file.name,
+        });
+        toast({ title: "Can't read file", description: "File parsed to 0 rows — check the raw preview below to diagnose.", variant: "destructive" });
         return;
       }
 
@@ -423,6 +433,7 @@ function AppleHealthCard() {
         matchedCols: preview.matchedColumns || [],
         isLongFormat: preview.isLongFormat || false,
         totalRows: preview.totalRows || rows.length,
+        rawPreview, fileName: file.name,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/health-stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/lab-results"] });
@@ -512,32 +523,46 @@ function AppleHealthCard() {
                     <CheckCircle2 size={12} />
                     {lastImport.rows} days imported{lastImport.labs > 0 ? ` + ${lastImport.labs} lab values` : ""}{lastImport.cleared ? " (sample data cleared)" : ""} at {lastImport.date}
                   </p>
+                ) : lastImport.totalRows === 0 ? (
+                  // Raw parse failed — show file content diagnostic
+                  <div className="space-y-1.5">
+                    <p className="text-xs text-red-500 font-medium flex items-center gap-1">
+                      <AlertTriangle size={12} /> File "{lastImport.fileName}" could not be parsed as CSV
+                    </p>
+                    <details className="text-xs" open>
+                      <summary className="text-muted-foreground cursor-pointer hover:text-foreground">Raw file preview (first 600 chars)</summary>
+                      <pre className="mt-2 p-2 bg-muted rounded text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all border border-card-border max-h-40">{lastImport.rawPreview}</pre>
+                      <p className="text-muted-foreground mt-1.5">Copy the text above and share it so we can identify the format.</p>
+                    </details>
+                  </div>
                 ) : (
                   <p className="text-xs text-yellow-500 font-medium">0 rows matched — see column details below</p>
                 )}
-                <details className="text-xs" open={lastImport.rows === 0}>
-                  <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
-                    {lastImport.isLongFormat ? "Long-format" : "Wide-format"} · {lastImport.totalRows} rows · {lastImport.cols.length} columns · {lastImport.matchedCols.length} recognized
-                  </summary>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {lastImport.cols.map(col => {
-                      const isMatched = lastImport.matchedCols.includes(col);
-                      return (
-                        <span key={col} className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
-                          isMatched
-                            ? "bg-green-500/15 text-green-600 dark:text-green-400 border border-green-500/20"
-                            : "bg-muted text-muted-foreground"
-                        }`}>{col}</span>
-                      );
-                    })}
-                  </div>
-                  <p className="text-muted-foreground mt-2">
-                    {lastImport.matchedCols.length === 0
-                      ? "No columns matched — your CSV format may differ from expected. Make sure aggregation = Day and export Wide format."
-                      : `Green = matched to dashboard · Grey = ignored`
-                    }
-                  </p>
-                </details>
+                {lastImport.totalRows > 0 && (
+                  <details className="text-xs" open={lastImport.rows === 0}>
+                    <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
+                      {lastImport.isLongFormat ? "Long-format" : "Wide-format"} · {lastImport.totalRows} rows · {lastImport.cols.length} columns · {lastImport.matchedCols.length} recognized
+                    </summary>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {lastImport.cols.map(col => {
+                        const isMatched = lastImport.matchedCols.includes(col);
+                        return (
+                          <span key={col} className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                            isMatched
+                              ? "bg-green-500/15 text-green-600 dark:text-green-400 border border-green-500/20"
+                              : "bg-muted text-muted-foreground"
+                          }`}>{col}</span>
+                        );
+                      })}
+                    </div>
+                    <p className="text-muted-foreground mt-2">
+                      {lastImport.matchedCols.length === 0
+                        ? "No columns matched — your CSV format may differ from expected. Make sure Aggregation = Day."
+                        : `Green = matched to dashboard · Grey = ignored`
+                      }
+                    </p>
+                  </details>
+                )}
               </div>
             )}
           </div>

@@ -522,23 +522,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const isoDate = date.split(' ')[0].split('T')[0];
       if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) continue;
 
-      // Vitals - try all known field name variants from Health Export app
-      const weightRaw      = pick(row, "Body Mass (lb)", "Weight (lb)", "Body Weight (lb)");
-      const hrRaw          = pick(row, "Resting Heart Rate (count/min)", "Resting HR (bpm)", "Resting Heart Rate (bpm)");
-      const hrvRaw         = pick(row, "Heart Rate Variability (ms)", "HRV (ms)", "HRV SDNN (ms)");
-      const stepsRaw       = pick(row, "Step Count (count)", "Steps (count)", "Step Count");
-      const vo2Raw         = pick(row, "VO2 Max (mL/min\u00b7kg)", "VO2Max(mL/min\u00b7kg)", "VO2 Max(mL/min\u00b7kg)", "VO2Max (mL/min/kg)", "VO2 Max (ml/min/kg)", "VO2Max(mL/min/kg)");
-      const fatRaw         = pick(row, "Body Fat Percentage (%)", "Body Fat (%)");
-      const sysRaw         = pick(row, "Blood Pressure Systolic (mmHg)", "Systolic Blood Pressure (mmHg)");
-      const diaRaw         = pick(row, "Blood Pressure Diastolic (mmHg)", "Diastolic Blood Pressure (mmHg)");
-      const sleepHrsRaw    = pick(row, "Sleep Duration (hr)", "Sleep Analysis (hr)", "Sleep Hours");
+      // Vitals - try all known field name variants from Health Export app AND Health Auto Export app
+      // Health Export CSV uses: "Body Mass (lb)", "Resting Heart Rate (count/min)", etc.
+      // Health Auto Export Quick Export uses plain English: "Weight Body Mass", "Resting Heart Rate", "Steps", etc.
+      // Health Auto Export per-metric files use: metric filename + "qty" column (handled via qty fallback at end)
+      const weightRaw      = pick(row, "Body Mass (lb)", "Weight (lb)", "Body Weight (lb)", "Weight Body Mass", "Weight");
+      const hrRaw          = pick(row, "Resting Heart Rate (count/min)", "Resting HR (bpm)", "Resting Heart Rate (bpm)", "Resting Heart Rate");
+      const hrvRaw         = pick(row, "Heart Rate Variability (ms)", "HRV (ms)", "HRV SDNN (ms)", "Heart Rate Variability");
+      const stepsRaw       = pick(row, "Step Count (count)", "Steps (count)", "Step Count", "Steps");
+      const vo2Raw         = pick(row, "VO2 Max (mL/min\u00b7kg)", "VO2Max(mL/min\u00b7kg)", "VO2 Max(mL/min\u00b7kg)", "VO2Max (mL/min/kg)", "VO2 Max (ml/min/kg)", "VO2Max(mL/min/kg)", "VO2 Max", "VO2Max");
+      const fatRaw         = pick(row, "Body Fat Percentage (%)", "Body Fat (%)", "Body Fat Percentage", "Body Fat");
+      const sysRaw         = pick(row, "Blood Pressure Systolic (mmHg)", "Systolic Blood Pressure (mmHg)", "Blood Pressure Systolic");
+      const diaRaw         = pick(row, "Blood Pressure Diastolic (mmHg)", "Diastolic Blood Pressure (mmHg)", "Blood Pressure Diastolic");
+      const sleepHrsRaw    = pick(row, "Sleep Duration (hr)", "Sleep Analysis (hr)", "Sleep Hours", "Sleep Analysis");
       const sleepMinRaw    = pick(row, "Sleep Duration (min)", "Sleep Analysis (min)", "Total Sleep Time (min)");
       const readinessRaw   = pick(row, "Readiness Score", "Apple Readiness Score");
-      const spo2Raw        = pick(row, "Oxygen Saturation (%)", "Blood Oxygen Saturation (%)", "SpO2 (%)", "Oxygen Saturation");
-      const caloriesRaw    = pick(row, "Active Energy Burned (kcal)", "Active Calories (kcal)", "Active Energy (kcal)", "Calories Burned (kcal)", "Dietary Energy Consumed (kcal)", "Total Calories (kcal)");
-      const proteinRaw     = pick(row, "Dietary Protein (g)", "Protein (g)");
-      const waterRaw       = pick(row, "Dietary Water (mL)", "Water (mL)", "Water Intake (mL)", "Dietary Water (L)", "Water (L)");
-      const workoutMinRaw  = pick(row, "Exercise Time (min)", "Apple Exercise Time (min)", "Workout Duration (min)", "Move Minutes (min)");
+      const spo2Raw        = pick(row, "Oxygen Saturation (%)", "Blood Oxygen Saturation (%)", "SpO2 (%)", "Oxygen Saturation", "Blood Oxygen Saturation");
+      const caloriesRaw    = pick(row, "Active Energy Burned (kcal)", "Active Calories (kcal)", "Active Energy (kcal)", "Calories Burned (kcal)", "Dietary Energy Consumed (kcal)", "Total Calories (kcal)", "Active Energy");
+      const proteinRaw     = pick(row, "Dietary Protein (g)", "Protein (g)", "Dietary Protein", "Protein");
+      const waterRaw       = pick(row, "Dietary Water (mL)", "Water (mL)", "Water Intake (mL)", "Dietary Water (L)", "Water (L)", "Dietary Water");
+      const workoutMinRaw  = pick(row, "Exercise Time (min)", "Apple Exercise Time (min)", "Workout Duration (min)", "Move Minutes (min)", "Apple Exercise Time", "Exercise Time");
 
       const hasVitalData = [weightRaw, hrRaw, hrvRaw, stepsRaw, vo2Raw, fatRaw, sysRaw, diaRaw, sleepHrsRaw, sleepMinRaw, readinessRaw, spo2Raw, caloriesRaw, workoutMinRaw].some(Boolean);
 
@@ -609,8 +612,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const isLongFormat = (firstKeys.includes('type') || firstKeys.includes('identifier')) &&
                          firstKeys.includes('value') &&
                          firstKeys.some(k => k.includes('date'));
-    // The known expected column names
+    // The known expected column names — includes both Health Export CSV and Health Auto Export formats
     const KNOWN = [
+      // Health Export CSV column names
       "Body Mass (lb)", "Weight (lb)", "Body Weight (lb)",
       "Resting Heart Rate (count/min)", "Resting HR (bpm)", "Resting Heart Rate (bpm)",
       "Heart Rate Variability (ms)", "HRV (ms)", "HRV SDNN (ms)",
@@ -627,6 +631,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       "Dietary Protein (g)", "Protein (g)",
       "Dietary Water (mL)", "Water (mL)",
       "Exercise Time (min)", "Apple Exercise Time (min)",
+      // Health Auto Export Quick Export column names (plain English, no units)
+      "Weight Body Mass", "Weight",
+      "Resting Heart Rate",
+      "Heart Rate Variability",
+      "Steps",
+      "VO2 Max", "VO2Max",
+      "Body Fat Percentage", "Body Fat",
+      "Blood Pressure Systolic", "Blood Pressure Diastolic",
+      "Sleep Analysis",
+      "Blood Oxygen Saturation", "Oxygen Saturation",
+      "Active Energy",
+      "Dietary Protein", "Protein",
+      "Dietary Water",
+      "Apple Exercise Time", "Exercise Time",
       "Date",
     ];
     const matched = cols.filter(c => KNOWN.some(k => c.toLowerCase().includes(k.toLowerCase().replace(/[^a-z0-9]/g,'').substring(0,8))));

@@ -458,7 +458,7 @@ function AppleHealthCard() {
               <Badge className="text-xs px-1.5 py-0 border-0 bg-muted text-muted-foreground">CSV Upload</Badge>
             </div>
             <p className="text-xs text-muted-foreground mb-3">
-              Apple doesn't allow direct web API access. Export from the <strong>Health Export CSV</strong> app on iPhone, then upload here.
+              Use <strong>Health Auto Export</strong> (App Store, free) — Quick Export, aggregated by Day. Also works with <strong>Health Export CSV</strong> by Lybik.
             </p>
 
             <button
@@ -776,17 +776,31 @@ export default function Integrations() {
         />
 
         <SetupGuideCard
-          title="How to export Apple Health data"
+          title="How to export Apple Health data (Health Auto Export)"
+          steps={[
+            "Download 'Health Auto Export - JSON+CSV' from the App Store (free, by Lybron Sobers — search 'Health Auto Export')",
+            "Open the app and tap 'Quick Export' (the lightning bolt icon)",
+            "Tap 'Add Metrics' and select all the metrics you want: Steps, Resting Heart Rate, Heart Rate Variability, VO2 Max, Weight Body Mass, Body Fat Percentage, Blood Pressure Systolic, Blood Pressure Diastolic, Active Energy, Sleep Analysis, Blood Oxygen Saturation",
+            "Set Aggregation to 'Day' (very important — do not leave it at 'None')",
+            "Set your date range (last 90 days is a good start)",
+            "Tap Export → choose CSV format → share/save the file",
+            "Upload the CSV file here using the Apple Health upload area above",
+          ]}
+          note="Make sure Aggregation is set to 'Day' — otherwise you get thousands of raw readings per metric and the file will be too large."
+        />
+
+        <SetupGuideCard
+          title="How to export Apple Health data (Health Export CSV — alternative)"
           steps={[
             "Download 'Health Export CSV' from the App Store (free, by Lybik)",
             "Open the app → tap 'New Export'",
-            "Select the metrics you want: Body Mass, Resting HR, HRV, Step Count, VO2 Max, Blood Pressure",
+            "Select ALL metrics you want: Body Mass, Resting Heart Rate, Heart Rate Variability, Step Count, VO2 Max, Body Fat Percentage, Blood Pressure Systolic/Diastolic, Sleep Analysis, Oxygen Saturation, Active Energy, Dietary Protein, Dietary Water, Apple Exercise Time",
             "Set your date range (last 30–90 days recommended)",
             "Set Aggregation to 'Day'",
-            "Tap Export → save the CSV file",
-            "Come back here and drag-and-drop (or tap to upload) your CSV file",
+            "Tap Export → Wide format → save the CSV",
+            "Upload the CSV here",
           ]}
-          note="Apple Health does not expose a web API — CSV upload is the only supported method for browser-based apps."
+          note="When using Health Export CSV, make sure to select ALL metrics in a single export — not just one. The dashboard needs a combined file with all columns."
         />
       </div>
     </div>

@@ -329,6 +329,71 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ── Withings CSV Upload (manual export fallback) ────────────────────────
+  app.post("/api/integrations/withings/upload-csv", async (req, res) => {
+    const { rows, fileType } = req.body as { rows: Record<string, string>[]; fileType: string };
+    if (!rows || !Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: "No rows provided" });
+    }
+    try {
+      let synced = 0;
+      const byDate = new Map<string, Partial<{ weight: number; bodyFat: number; systolic: number; diastolic: number; restingHr: number }>>();
+
+      for (const row of rows) {
+        // Date column — Withings exports as "YYYY-MM-DD HH:MM:SS"
+        const rawDate = row["Date"] || row["date"] || "";
+        if (!rawDate) continue;
+        const date = rawDate.split(" ")[0].trim(); // take just YYYY-MM-DD
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+
+        if (!byDate.has(date)) byDate.set(date, {});
+        const entry = byDate.get(date)!;
+
+        if (fileType === "weight") {
+          // Withings weight CSV — columns may be in lbs or kg depending on account settings
+          // Try lbs first, then kg
+          const wLb = parseFloat(row["Weight (lb)"] || row["Weight (lbs)"] || "");
+          const wKg = parseFloat(row["Weight (kg)"] || "");
+          const fatLb = parseFloat(row["Fat mass (lb)"] || row["Fat mass (lbs)"] || "");
+          const fatKg = parseFloat(row["Fat mass (kg)"] || "");
+
+          if (!isNaN(wLb) && wLb > 0) entry.weight = Math.round(wLb * 10) / 10;
+          else if (!isNaN(wKg) && wKg > 0) entry.weight = Math.round(wKg * 2.20462 * 10) / 10;
+
+          // Body fat from fat mass — convert fat mass to percentage
+          const totalWeight = entry.weight ?? (wKg * 2.20462);
+          if (!isNaN(fatLb) && fatLb > 0 && totalWeight > 0) {
+            entry.bodyFat = Math.round((fatLb / totalWeight) * 1000) / 10;
+          } else if (!isNaN(fatKg) && fatKg > 0 && totalWeight > 0) {
+            const fatLbCalc = fatKg * 2.20462;
+            entry.bodyFat = Math.round((fatLbCalc / totalWeight) * 1000) / 10;
+          }
+        }
+
+        if (fileType === "blood_pressure") {
+          // Withings BP CSV
+          const sys = parseInt(row["Systole"] || row["Systolic"] || "");
+          const dia = parseInt(row["Diastole"] || row["Diastolic"] || "");
+          const hr  = parseInt(row["Heart rate"] || row["HR"] || "");
+          if (!isNaN(sys) && sys > 0) entry.systolic = sys;
+          if (!isNaN(dia) && dia > 0) entry.diastolic = dia;
+          if (!isNaN(hr)  && hr  > 0) entry.restingHr = hr;
+        }
+      }
+
+      for (const [date, vals] of byDate.entries()) {
+        if (Object.keys(vals).length > 0) {
+          await storage.upsertHealthStatsByDate(date, { date, ...vals });
+          synced++;
+        }
+      }
+
+      res.json({ success: true, synced, message: `Imported ${synced} days from Withings ${fileType === "weight" ? "Weight" : "Blood Pressure"} CSV` });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Withings disconnect
   app.delete("/api/integrations/withings", async (_req, res) => {
     await storage.deleteIntegrationToken('withings');

@@ -229,6 +229,124 @@ function QuestPDFCard() {
   );
 }
 
+// ── Withings CSV uploader (manual export) ────────────────────────────────
+function WithingsCSVCard() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [dragOverWeight, setDragOverWeight] = useState(false);
+  const [dragOverBP, setDragOverBP] = useState(false);
+  const [importingWeight, setImportingWeight] = useState(false);
+  const [importingBP, setImportingBP] = useState(false);
+  const [lastWeight, setLastWeight] = useState<{ rows: number; date: string } | null>(null);
+  const [lastBP, setLastBP] = useState<{ rows: number; date: string } | null>(null);
+
+  const parseAndUpload = async (file: File, fileType: "weight" | "blood_pressure") => {
+    if (!file.name.endsWith(".csv")) {
+      toast({ title: "CSV only", description: "Please upload a .csv file from Withings export.", variant: "destructive" });
+      return;
+    }
+    if (fileType === "weight") setImportingWeight(true); else setImportingBP(true);
+    try {
+      const text = await file.text();
+      const lines = text.trim().split("\n").filter(l => l.trim());
+      if (lines.length < 2) throw new Error("CSV appears empty");
+      // Handle quoted headers
+      const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
+      const rows = lines.slice(1).map(line => {
+        // Handle quoted values with commas inside
+        const vals: string[] = [];
+        let cur = ""; let inQ = false;
+        for (const ch of line) {
+          if (ch === '"') { inQ = !inQ; }
+          else if (ch === ',' && !inQ) { vals.push(cur.trim()); cur = ""; }
+          else { cur += ch; }
+        }
+        vals.push(cur.trim());
+        return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? ""]));
+      });
+      const res = await apiRequest("POST", "/api/integrations/withings/upload-csv", { rows, fileType });
+      if (fileType === "weight") setLastWeight({ rows: res.synced, date: new Date().toLocaleTimeString() });
+      else setLastBP({ rows: res.synced, date: new Date().toLocaleTimeString() });
+      queryClient.invalidateQueries({ queryKey: ["/api/health-stats"] });
+      toast({ title: "Import complete", description: res.message });
+    } catch (e: any) {
+      toast({ title: "Import failed", description: e.message, variant: "destructive" });
+    } finally {
+      if (fileType === "weight") setImportingWeight(false); else setImportingBP(false);
+    }
+  };
+
+  const DropZone = ({ type, dragOver, setDragOver, importing, last, label, inputId }: {
+    type: "weight" | "blood_pressure"; dragOver: boolean; setDragOver: (v: boolean) => void;
+    importing: boolean; last: { rows: number; date: string } | null; label: string; inputId: string;
+  }) => (
+    <div className="mb-2">
+      <p className="text-xs text-muted-foreground mb-1.5 font-medium">{label}</p>
+      <div
+        onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) parseAndUpload(f, type); }}
+        onClick={() => document.getElementById(inputId)?.click()}
+        className={`border-2 border-dashed rounded-lg p-3 text-center transition-colors cursor-pointer ${
+          dragOver ? "border-primary bg-primary/5" : "border-card-border hover:border-primary/50"
+        }`}
+        data-testid={`dropzone-withings-${type}`}
+      >
+        <input id={inputId} type="file" accept=".csv" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) parseAndUpload(f, type); }} />
+        {importing ? (
+          <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+            <RefreshCw size={12} className="animate-spin" /> Importing…
+          </div>
+        ) : (
+          <div className="flex items-center justify-center gap-1.5">
+            <FileUp size={14} className="text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">Drag & drop or click to upload</span>
+          </div>
+        )}
+      </div>
+      {last && (
+        <p className="text-xs text-green-500 flex items-center gap-1 mt-1.5">
+          <CheckCircle2 size={11} /> {last.rows} days imported at {last.date}
+        </p>
+      )}
+    </div>
+  );
+
+  return (
+    <Card className="bg-card border-card-border">
+      <CardContent className="p-5">
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl flex-shrink-0 bg-muted/40 border border-card-border">
+            ⚖️
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="font-semibold text-sm">Withings</span>
+              <Badge className="text-xs px-1.5 py-0 border-0 bg-muted text-muted-foreground">CSV Upload</Badge>
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">
+              In the Withings app: <strong>Profile → Settings → Export All Health Data</strong>. You’ll get an email with a CSV. Upload the <strong>weight.csv</strong> and <strong>blood_pressure.csv</strong> files below.
+            </p>
+            <DropZone
+              type="weight" dragOver={dragOverWeight} setDragOver={setDragOverWeight}
+              importing={importingWeight} last={lastWeight}
+              label="Weight + Body Fat CSV (weight.csv)"
+              inputId="withings-weight-file"
+            />
+            <DropZone
+              type="blood_pressure" dragOver={dragOverBP} setDragOver={setDragOverBP}
+              importing={importingBP} last={lastBP}
+              label="Blood Pressure CSV (blood_pressure.csv)"
+              inputId="withings-bp-file"
+            />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Apple Health CSV uploader ───────────────────────────────────────────────
 function AppleHealthCard() {
   const { toast } = useToast();
@@ -491,6 +609,7 @@ export default function Integrations() {
 
       <div className="space-y-3">
         <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Manual Upload</h2>
+        <WithingsCSVCard />
         <QuestPDFCard />
         <AppleHealthCard />
       </div>

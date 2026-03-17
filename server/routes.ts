@@ -598,6 +598,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ success: true, synced, labsSynced, clearedSeed: hasSeedData, message: `Imported ${synced} days of real data + ${labsSynced} lab values from Apple Health${hasSeedData ? ' (sample data cleared)' : ''}` });
   });
 
+  // ── Apple Health CSV Preview (debug — returns column analysis without writing) ──
+  app.post("/api/integrations/apple-health/preview", async (req, res) => {
+    const { rows } = req.body as { rows: Array<Record<string, string>> };
+    if (!rows || !Array.isArray(rows) || rows.length === 0)
+      return res.status(400).json({ error: "No rows" });
+    const firstRow = rows[0];
+    const cols = Object.keys(firstRow);
+    const firstKeys = cols.map(k => k.toLowerCase());
+    const isLongFormat = (firstKeys.includes('type') || firstKeys.includes('identifier')) &&
+                         firstKeys.includes('value') &&
+                         firstKeys.some(k => k.includes('date'));
+    // The known expected column names
+    const KNOWN = [
+      "Body Mass (lb)", "Weight (lb)", "Body Weight (lb)",
+      "Resting Heart Rate (count/min)", "Resting HR (bpm)", "Resting Heart Rate (bpm)",
+      "Heart Rate Variability (ms)", "HRV (ms)", "HRV SDNN (ms)",
+      "Step Count (count)", "Steps (count)", "Step Count",
+      "VO2 Max (mL/min·kg)", "VO2Max (mL/min/kg)", "VO2 Max (ml/min/kg)",
+      "Body Fat Percentage (%)", "Body Fat (%)",
+      "Blood Pressure Systolic (mmHg)", "Systolic Blood Pressure (mmHg)",
+      "Blood Pressure Diastolic (mmHg)", "Diastolic Blood Pressure (mmHg)",
+      "Sleep Duration (hr)", "Sleep Analysis (hr)", "Sleep Hours",
+      "Sleep Duration (min)", "Sleep Analysis (min)", "Total Sleep Time (min)",
+      "Readiness Score", "Apple Readiness Score",
+      "Oxygen Saturation (%)", "Blood Oxygen Saturation (%)", "SpO2 (%)",
+      "Active Energy Burned (kcal)", "Active Calories (kcal)", "Active Energy (kcal)",
+      "Dietary Protein (g)", "Protein (g)",
+      "Dietary Water (mL)", "Water (mL)",
+      "Exercise Time (min)", "Apple Exercise Time (min)",
+      "Date",
+    ];
+    const matched = cols.filter(c => KNOWN.some(k => c.toLowerCase().includes(k.toLowerCase().replace(/[^a-z0-9]/g,'').substring(0,8))));
+    // Sample unique HK type values if long format
+    const uniqueTypes = isLongFormat
+      ? [...new Set(rows.slice(0, 200).map(r => r['type'] || r['Type'] || r['identifier'] || ''))].slice(0, 30)
+      : [];
+    res.json({
+      totalRows: rows.length,
+      isLongFormat,
+      columns: cols,
+      sampleRow: firstRow,
+      matchedColumns: matched,
+      uniqueTypesIfLongFormat: uniqueTypes,
+    });
+  });
+
   // ── Quest Diagnostics PDF Upload ─────────────────────────────────────────
   app.post("/api/integrations/quest/upload", upload.single('pdf'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No PDF file uploaded" });

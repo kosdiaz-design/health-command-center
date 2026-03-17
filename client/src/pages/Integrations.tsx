@@ -353,7 +353,7 @@ function AppleHealthCard() {
   const queryClient = useQueryClient();
   const [dragOver, setDragOver] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [lastImport, setLastImport] = useState<{ rows: number; labs: number; cleared: boolean; date: string; cols: string[] } | null>(null);
+  const [lastImport, setLastImport] = useState<{ rows: number; labs: number; cleared: boolean; date: string; cols: string[]; matchedCols: string[]; isLongFormat: boolean; totalRows: number } | null>(null);
   const [showData, setShowData] = useState(false);
 
   const dataPoints = ["Weight", "Resting HR", "HRV", "Steps", "VO2 Max", "Body Fat", "Blood Pressure", "Sleep"];
@@ -401,19 +401,42 @@ function AppleHealthCard() {
         toast({ title: "Empty file", description: "No data rows found in this CSV.", variant: "destructive" });
         return;
       }
-      const cols = Object.keys(rows[0]);
-      const res = await apiRequest("POST", "/api/integrations/apple-health/upload", { rows });
-      setLastImport({ rows: res.synced, labs: res.labsSynced, cleared: res.clearedSeed, date: new Date().toLocaleTimeString(), cols });
+
+      // Step 1: Preview — get column analysis without writing anything
+      const preview = await apiRequest("POST", "/api/integrations/apple-health/preview", { rows: rows.slice(0, 50) });
+
+      // Step 2: Upload in chunks of 500 rows to avoid payload limits
+      const CHUNK = 500;
+      let totalSynced = 0; let totalLabs = 0; let clearedSeed = false;
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const chunk = rows.slice(i, i + CHUNK);
+        const res = await apiRequest("POST", "/api/integrations/apple-health/upload", { rows: chunk });
+        totalSynced += res.synced || 0;
+        totalLabs += res.labsSynced || 0;
+        if (res.clearedSeed) clearedSeed = true;
+      }
+
+      setLastImport({
+        rows: totalSynced, labs: totalLabs, cleared: clearedSeed,
+        date: new Date().toLocaleTimeString(),
+        cols: preview.columns || [],
+        matchedCols: preview.matchedColumns || [],
+        isLongFormat: preview.isLongFormat || false,
+        totalRows: preview.totalRows || rows.length,
+      });
       queryClient.invalidateQueries({ queryKey: ["/api/health-stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/lab-results"] });
-      if (res.synced === 0) {
+
+      if (totalSynced === 0) {
         toast({
-          title: "No vitals matched",
-          description: `Found ${rows.length} rows but 0 matched. Check column names below — expected: "Body Mass (lb)", "Resting Heart Rate (count/min)", "Heart Rate Variability (ms)", etc.`,
+          title: "0 rows matched",
+          description: preview.isLongFormat
+            ? `Long-format detected. Found ${(preview.uniqueTypesIfLongFormat || []).length} HK types. Check column panel below.`
+            : `Wide-format: ${preview.columns?.length} columns found, ${(preview.matchedColumns || []).length} recognized. Check panel below.`,
           variant: "destructive",
         });
       } else {
-        toast({ title: "Import complete", description: res.message });
+        toast({ title: "Import complete", description: `${totalSynced} days imported${totalLabs > 0 ? ` + ${totalLabs} lab values` : ""}` });
       }
     } catch (e: any) {
       toast({ title: "Import failed", description: e.message, variant: "destructive" });
@@ -483,32 +506,37 @@ function AppleHealthCard() {
             </div>
 
             {lastImport && (
-              <div className="space-y-2">
+              <div className="space-y-2 mt-2">
                 {lastImport.rows > 0 ? (
                   <p className="text-xs text-green-500 flex items-center gap-1">
                     <CheckCircle2 size={12} />
                     {lastImport.rows} days imported{lastImport.labs > 0 ? ` + ${lastImport.labs} lab values` : ""}{lastImport.cleared ? " (sample data cleared)" : ""} at {lastImport.date}
                   </p>
                 ) : (
-                  <p className="text-xs text-yellow-500 font-medium">0 rows matched — column names not recognized</p>
+                  <p className="text-xs text-yellow-500 font-medium">0 rows matched — see column details below</p>
                 )}
-                {/* Show detected columns so user can see what the app read */}
-                <details className="text-xs">
-                  <summary className="text-muted-foreground cursor-pointer hover:text-foreground">Detected {lastImport.cols.length} columns in your CSV</summary>
-                  <div className="mt-1.5 flex flex-wrap gap-1">
+                <details className="text-xs" open={lastImport.rows === 0}>
+                  <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
+                    {lastImport.isLongFormat ? "Long-format" : "Wide-format"} · {lastImport.totalRows} rows · {lastImport.cols.length} columns · {lastImport.matchedCols.length} recognized
+                  </summary>
+                  <div className="mt-2 flex flex-wrap gap-1">
                     {lastImport.cols.map(col => {
-                      const known = [
-                        "Body Mass", "Resting Heart Rate", "Heart Rate Variability", "Step Count",
-                        "VO2 Max", "Body Fat", "Blood Pressure", "Sleep", "Date"
-                      ].some(k => col.includes(k));
+                      const isMatched = lastImport.matchedCols.includes(col);
                       return (
-                        <span key={col} className={`px-1.5 py-0.5 rounded text-[10px] ${
-                          known ? "bg-green-500/15 text-green-600 dark:text-green-400" : "bg-muted text-muted-foreground"
+                        <span key={col} className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                          isMatched
+                            ? "bg-green-500/15 text-green-600 dark:text-green-400 border border-green-500/20"
+                            : "bg-muted text-muted-foreground"
                         }`}>{col}</span>
                       );
                     })}
                   </div>
-                  <p className="text-muted-foreground mt-1">Green = recognized · Grey = not used</p>
+                  <p className="text-muted-foreground mt-2">
+                    {lastImport.matchedCols.length === 0
+                      ? "No columns matched — your CSV format may differ from expected. Make sure aggregation = Day and export Wide format."
+                      : `Green = matched to dashboard · Grey = ignored`
+                    }
+                  </p>
                 </details>
               </div>
             )}

@@ -415,8 +415,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     let labsSynced = 0;
 
     // Helper: grab first non-empty value across multiple field name variants
+    // Also does case-insensitive substring matching as fallback
     const pick = (row: Record<string,string>, ...keys: string[]): string => {
+      // Exact match first
       for (const k of keys) { if (row[k]) return row[k]; }
+      // Fuzzy: case-insensitive key contains the search term
+      const rowKeys = Object.keys(row);
+      for (const k of keys) {
+        const kLower = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const found = rowKeys.find(rk => rk.toLowerCase().replace(/[^a-z0-9]/g, '').includes(kLower));
+        if (found && row[found]) return row[found];
+      }
       return '';
     };
 
@@ -425,6 +434,51 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const score = Math.round(50 + (hrs / 8) * 50);
       return Math.min(100, Math.max(0, score));
     };
+
+    // Detect long-format CSV (type/value/startDate per row) vs wide-format (one date row, many columns)
+    // Long-format example: type="HKQuantityTypeIdentifierBodyMass", value="87.5", startDate="2026-03-15"
+    const firstRow = rows[0] || {};
+    const firstKeys = Object.keys(firstRow).map(k => k.toLowerCase());
+    const isLongFormat = (firstKeys.includes('type') || firstKeys.includes('identifier')) &&
+                         firstKeys.includes('value') &&
+                         (firstKeys.some(k => k.includes('date')));
+
+    if (isLongFormat) {
+      // Long-format: pivot rows into wide-format grouped by date
+      const dateMap = new Map<string, Record<string, string>>();
+      const HK_MAP: Record<string, string> = {
+        'hkquantitytypeidentifierbodymass':            'Body Mass (lb)',
+        'hkquantitytypeidentifierrestingheartrate':    'Resting Heart Rate (count/min)',
+        'hkquantitytypeidentifierheartratevariabilitysdnn': 'Heart Rate Variability (ms)',
+        'hkquantitytypeidentifierstepcount':           'Step Count (count)',
+        'hkquantitytypeidentifiervo2max':              'VO2 Max (mL/min·kg)',
+        'hkquantitytypeidentifierbodyfatpercentage':   'Body Fat Percentage (%)',
+        'hkquantitytypeidentifierbloodpressuresystolic':   'Blood Pressure Systolic (mmHg)',
+        'hkquantitytypeidentifierbloodpressurediastolic':  'Blood Pressure Diastolic (mmHg)',
+        'hkquantitytypeidentifierappleexercisetime':   'Exercise Time (min)',
+        'hkquantitytypeidentifiersleepanalysis':       'Sleep Duration (hr)',
+      };
+      for (const row of rows) {
+        const typeVal = (row['type'] || row['identifier'] || row['Type'] || '').toLowerCase().replace(/[^a-z]/g, '');
+        const value   = row['value'] || row['Value'] || '';
+        const rawDate = row['startDate'] || row['date'] || row['Date'] || row['Start Date'] || '';
+        if (!rawDate || !value) continue;
+        const isoDate = rawDate.split('T')[0].split(' ')[0];
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) continue;
+        const colName = HK_MAP[typeVal];
+        if (!colName) continue;
+        if (!dateMap.has(isoDate)) dateMap.set(isoDate, { Date: isoDate });
+        const entry = dateMap.get(isoDate)!;
+        // For step count, accumulate; for others take latest
+        if (colName === 'Step Count (count)') {
+          entry[colName] = String((parseFloat(entry[colName] || '0') + parseFloat(value)));
+        } else {
+          entry[colName] = value;
+        }
+      }
+      // Replace rows with pivoted wide-format rows
+      rows.splice(0, rows.length, ...Array.from(dateMap.values()));
+    }
 
     // Lab mappings - covers all field name variants from Health Export app
     const labMappings: Array<{ fields: string[]; testName: string; unit: string; refLow?: number; refHigh?: number }> = [

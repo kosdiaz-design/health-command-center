@@ -353,10 +353,40 @@ function AppleHealthCard() {
   const queryClient = useQueryClient();
   const [dragOver, setDragOver] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [lastImport, setLastImport] = useState<{ rows: number; date: string } | null>(null);
+  const [lastImport, setLastImport] = useState<{ rows: number; labs: number; cleared: boolean; date: string; cols: string[] } | null>(null);
   const [showData, setShowData] = useState(false);
 
-  const dataPoints = ["Weight", "Resting HR", "HRV", "Steps", "VO2 Max", "Body Fat", "Blood Pressure"];
+  const dataPoints = ["Weight", "Resting HR", "HRV", "Steps", "VO2 Max", "Body Fat", "Blood Pressure", "Sleep"];
+
+  // Robust CSV parser — handles quoted fields with commas inside
+  const parseCSV = (text: string): Array<Record<string, string>> => {
+    const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim().split("\n");
+    if (lines.length < 2) return [];
+
+    const parseLine = (line: string): string[] => {
+      const fields: string[] = [];
+      let cur = ""; let inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (inQ && line[i + 1] === '"') { cur += '"'; i++; } // escaped quote
+          else { inQ = !inQ; }
+        } else if (ch === ',' && !inQ) {
+          fields.push(cur.trim()); cur = "";
+        } else { cur += ch; }
+      }
+      fields.push(cur.trim());
+      return fields;
+    };
+
+    const headers = parseLine(lines[0]);
+    return lines.slice(1)
+      .filter(l => l.trim())
+      .map(line => {
+        const vals = parseLine(line);
+        return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? ""]));
+      });
+  };
 
   const handleFile = async (file: File) => {
     if (!file.name.endsWith(".csv")) {
@@ -366,16 +396,25 @@ function AppleHealthCard() {
     setImporting(true);
     try {
       const text = await file.text();
-      const lines = text.trim().split("\n");
-      const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
-      const rows = lines.slice(1).map(line => {
-        const vals = line.split(",").map(v => v.trim().replace(/^"|"$/g, ""));
-        return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? ""]));
-      });
+      const rows = parseCSV(text);
+      if (rows.length === 0) {
+        toast({ title: "Empty file", description: "No data rows found in this CSV.", variant: "destructive" });
+        return;
+      }
+      const cols = Object.keys(rows[0]);
       const res = await apiRequest("POST", "/api/integrations/apple-health/upload", { rows });
-      setLastImport({ rows: res.synced, date: new Date().toLocaleTimeString() });
+      setLastImport({ rows: res.synced, labs: res.labsSynced, cleared: res.clearedSeed, date: new Date().toLocaleTimeString(), cols });
       queryClient.invalidateQueries({ queryKey: ["/api/health-stats"] });
-      toast({ title: "Import complete", description: res.message });
+      queryClient.invalidateQueries({ queryKey: ["/api/lab-results"] });
+      if (res.synced === 0) {
+        toast({
+          title: "No vitals matched",
+          description: `Found ${rows.length} rows but 0 matched. Check column names below — expected: "Body Mass (lb)", "Resting Heart Rate (count/min)", "Heart Rate Variability (ms)", etc.`,
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "Import complete", description: res.message });
+      }
     } catch (e: any) {
       toast({ title: "Import failed", description: e.message, variant: "destructive" });
     } finally {
@@ -444,10 +483,34 @@ function AppleHealthCard() {
             </div>
 
             {lastImport && (
-              <p className="text-xs text-green-500 flex items-center gap-1">
-                <CheckCircle2 size={12} />
-                Last import: {lastImport.rows} rows at {lastImport.date}
-              </p>
+              <div className="space-y-2">
+                {lastImport.rows > 0 ? (
+                  <p className="text-xs text-green-500 flex items-center gap-1">
+                    <CheckCircle2 size={12} />
+                    {lastImport.rows} days imported{lastImport.labs > 0 ? ` + ${lastImport.labs} lab values` : ""}{lastImport.cleared ? " (sample data cleared)" : ""} at {lastImport.date}
+                  </p>
+                ) : (
+                  <p className="text-xs text-yellow-500 font-medium">0 rows matched — column names not recognized</p>
+                )}
+                {/* Show detected columns so user can see what the app read */}
+                <details className="text-xs">
+                  <summary className="text-muted-foreground cursor-pointer hover:text-foreground">Detected {lastImport.cols.length} columns in your CSV</summary>
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {lastImport.cols.map(col => {
+                      const known = [
+                        "Body Mass", "Resting Heart Rate", "Heart Rate Variability", "Step Count",
+                        "VO2 Max", "Body Fat", "Blood Pressure", "Sleep", "Date"
+                      ].some(k => col.includes(k));
+                      return (
+                        <span key={col} className={`px-1.5 py-0.5 rounded text-[10px] ${
+                          known ? "bg-green-500/15 text-green-600 dark:text-green-400" : "bg-muted text-muted-foreground"
+                        }`}>{col}</span>
+                      );
+                    })}
+                  </div>
+                  <p className="text-muted-foreground mt-1">Green = recognized · Grey = not used</p>
+                </details>
+              </div>
             )}
           </div>
         </div>

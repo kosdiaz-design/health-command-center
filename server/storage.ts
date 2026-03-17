@@ -48,6 +48,8 @@ export interface IStorage {
   getIntegrationToken(id: string): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; connectedAt: string } | undefined>;
   setIntegrationToken(id: string, data: { accessToken: string; refreshToken?: string; expiresAt?: number; connectedAt: string }): Promise<void>;
   deleteIntegrationToken(id: string): Promise<void>;
+  clearHealthStats(): Promise<void>;
+  isSeedData(): Promise<boolean>;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -362,6 +364,17 @@ class SQLiteStorage implements IStorage {
     db.prepare(`INSERT OR REPLACE INTO integration_tokens (id,access_token,refresh_token,expires_at,connected_at) VALUES (?,?,?,?,?)`).run(id, data.accessToken, data.refreshToken ?? null, data.expiresAt ?? null, data.connectedAt);
   }
   async deleteIntegrationToken(id: string) { db.prepare(`DELETE FROM integration_tokens WHERE id = ?`).run(id); }
+
+  async clearHealthStats() {
+    db.prepare(`DELETE FROM health_stats`).run();
+  }
+
+  async isSeedData(): Promise<boolean> {
+    // Returns true if no real Apple Health / Withings data has been uploaded yet
+    const count = (db.prepare(`SELECT COUNT(*) as n FROM health_stats WHERE notes IS NULL OR notes != 'real_data'`).get() as any).n;
+    const real = (db.prepare(`SELECT COUNT(*) as n FROM health_stats WHERE notes = 'real_data'`).get() as any).n;
+    return real === 0 && count > 0;
+  }
 }
 
 export const storage = new SQLiteStorage();

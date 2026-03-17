@@ -406,79 +406,110 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/integrations/apple-health/upload", async (req, res) => {
     const { rows } = req.body as { rows: Array<Record<string, string>> };
     if (!rows || !Array.isArray(rows)) return res.status(400).json({ error: "Expected { rows: [...] }" });
+
+    // Auto-clear fake seed data on first real upload
+    const hasSeedData = await storage.isSeedData();
+    if (hasSeedData) await storage.clearHealthStats();
+
     let synced = 0;
     let labsSynced = 0;
 
-    // Lab value mappings from Apple Health field names (incl. Quest sync)
-    const labMappings: Array<{ field: string; testName: string; unit: string; refLow?: number; refHigh?: number }> = [
-      { field: "Blood Glucose (mg/dL)", testName: "Fasting Glucose", unit: "mg/dL", refLow: 70, refHigh: 100 },
-      { field: "Total Cholesterol (mg/dL)", testName: "Total Cholesterol", unit: "mg/dL", refLow: 0, refHigh: 200 },
-      { field: "LDL Cholesterol (mg/dL)", testName: "LDL Cholesterol", unit: "mg/dL", refLow: 0, refHigh: 130 },
-      { field: "HDL Cholesterol (mg/dL)", testName: "HDL Cholesterol", unit: "mg/dL", refLow: 40, refHigh: 999 },
-      { field: "Triglycerides (mg/dL)", testName: "Triglycerides", unit: "mg/dL", refLow: 0, refHigh: 150 },
-      { field: "Hemoglobin A1C (%)", testName: "HbA1c", unit: "%", refLow: 0, refHigh: 5.7 },
-      { field: "Insulin (µIU/mL)", testName: "Fasting Insulin", unit: "µIU/mL", refLow: 0, refHigh: 25 },
-      { field: "Creatinine (mg/dL)", testName: "Creatinine", unit: "mg/dL", refLow: 0.7, refHigh: 1.3 },
-      { field: "Sodium (mEq/L)", testName: "Sodium", unit: "mEq/L", refLow: 136, refHigh: 145 },
-      { field: "Potassium (mEq/L)", testName: "Potassium", unit: "mEq/L", refLow: 3.5, refHigh: 5.1 },
-      { field: "Testosterone (ng/dL)", testName: "Testosterone (Total)", unit: "ng/dL", refLow: 300, refHigh: 1000 },
-      { field: "TSH (mIU/L)", testName: "TSH", unit: "mIU/L", refLow: 0.4, refHigh: 4.0 },
-      { field: "C-Reactive Protein (mg/L)", testName: "hsCRP", unit: "mg/L", refLow: 0, refHigh: 3.0 },
-      { field: "Vitamin D (ng/mL)", testName: "Vitamin D (25-OH)", unit: "ng/mL", refLow: 30, refHigh: 100 },
-      { field: "Ferritin (ng/mL)", testName: "Ferritin", unit: "ng/mL", refLow: 12, refHigh: 300 },
-      { field: "Hemoglobin (g/dL)", testName: "Hemoglobin", unit: "g/dL", refLow: 13.5, refHigh: 17.5 },
+    // Helper: grab first non-empty value across multiple field name variants
+    const pick = (row: Record<string,string>, ...keys: string[]): string => {
+      for (const k of keys) { if (row[k]) return row[k]; }
+      return '';
+    };
+
+    // Sleep duration (hours) -> approximate sleep score
+    const sleepScoreFromHours = (hrs: number): number => {
+      const score = Math.round(50 + (hrs / 8) * 50);
+      return Math.min(100, Math.max(0, score));
+    };
+
+    // Lab mappings - covers all field name variants from Health Export app
+    const labMappings: Array<{ fields: string[]; testName: string; unit: string; refLow?: number; refHigh?: number }> = [
+      { fields: ["Blood Glucose (mg/dL)", "Glucose (mg/dL)"], testName: "Fasting Glucose", unit: "mg/dL", refLow: 70, refHigh: 100 },
+      { fields: ["Total Cholesterol (mg/dL)", "Cholesterol (mg/dL)"], testName: "Total Cholesterol", unit: "mg/dL", refLow: 0, refHigh: 200 },
+      { fields: ["LDL Cholesterol (mg/dL)", "LDL (mg/dL)"], testName: "LDL Cholesterol", unit: "mg/dL", refLow: 0, refHigh: 130 },
+      { fields: ["HDL Cholesterol (mg/dL)", "HDL (mg/dL)"], testName: "HDL Cholesterol", unit: "mg/dL", refLow: 40, refHigh: 999 },
+      { fields: ["Triglycerides (mg/dL)"], testName: "Triglycerides", unit: "mg/dL", refLow: 0, refHigh: 150 },
+      { fields: ["Hemoglobin A1C (%)", "HbA1c (%)", "A1C (%)"], testName: "HbA1c", unit: "%", refLow: 0, refHigh: 5.7 },
+      { fields: ["Insulin (µIU/mL)", "Insulin (uIU/mL)"], testName: "Fasting Insulin", unit: "µIU/mL", refLow: 0, refHigh: 25 },
+      { fields: ["Creatinine (mg/dL)"], testName: "Creatinine", unit: "mg/dL", refLow: 0.7, refHigh: 1.3 },
+      { fields: ["Sodium (mEq/L)", "Sodium (mmol/L)"], testName: "Sodium", unit: "mEq/L", refLow: 136, refHigh: 145 },
+      { fields: ["Potassium (mEq/L)", "Potassium (mmol/L)"], testName: "Potassium", unit: "mEq/L", refLow: 3.5, refHigh: 5.1 },
+      { fields: ["Testosterone (ng/dL)"], testName: "Testosterone (Total)", unit: "ng/dL", refLow: 300, refHigh: 1000 },
+      { fields: ["TSH (mIU/L)", "TSH (mU/L)"], testName: "TSH", unit: "mIU/L", refLow: 0.4, refHigh: 4.0 },
+      { fields: ["C-Reactive Protein (mg/L)", "hsCRP (mg/L)", "CRP (mg/L)"], testName: "hsCRP", unit: "mg/L", refLow: 0, refHigh: 3.0 },
+      { fields: ["Vitamin D (ng/mL)", "25-OH Vitamin D (ng/mL)"], testName: "Vitamin D (25-OH)", unit: "ng/mL", refLow: 30, refHigh: 100 },
+      { fields: ["Ferritin (ng/mL)"], testName: "Ferritin", unit: "ng/mL", refLow: 12, refHigh: 300 },
+      { fields: ["Hemoglobin (g/dL)"], testName: "Hemoglobin", unit: "g/dL", refLow: 13.5, refHigh: 17.5 },
     ];
 
     for (const row of rows) {
       const date = row["Date"] || row["date"];
       if (!date) continue;
-      const isoDate = date.split(' ')[0];
+      const isoDate = date.split(' ')[0].split('T')[0];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) continue;
 
-      // Health stats (vitals, biometrics)
-      const hasVitalData = [
-        "Body Mass (lb)", "Resting Heart Rate (count/min)", "Heart Rate Variability (ms)",
-        "Step Count (count)", "VO2 Max (mL/min·kg)", "Body Fat Percentage (%)",
-        "Blood Pressure Systolic (mmHg)", "Blood Pressure Diastolic (mmHg)"
-      ].some(f => row[f]);
+      // Vitals - try all known field name variants from Health Export app
+      const weightRaw    = pick(row, "Body Mass (lb)", "Weight (lb)", "Body Weight (lb)");
+      const hrRaw        = pick(row, "Resting Heart Rate (count/min)", "Resting HR (bpm)", "Resting Heart Rate (bpm)");
+      const hrvRaw       = pick(row, "Heart Rate Variability (ms)", "HRV (ms)", "HRV SDNN (ms)");
+      const stepsRaw     = pick(row, "Step Count (count)", "Steps (count)", "Step Count");
+      const vo2Raw       = pick(row, "VO2 Max (mL/min\u00b7kg)", "VO2Max (mL/min/kg)", "VO2 Max (ml/min/kg)");
+      const fatRaw       = pick(row, "Body Fat Percentage (%)", "Body Fat (%)");
+      const sysRaw       = pick(row, "Blood Pressure Systolic (mmHg)", "Systolic Blood Pressure (mmHg)");
+      const diaRaw       = pick(row, "Blood Pressure Diastolic (mmHg)", "Diastolic Blood Pressure (mmHg)");
+      const sleepHrsRaw  = pick(row, "Sleep Duration (hr)", "Sleep Analysis (hr)", "Sleep Hours");
+      const sleepMinRaw  = pick(row, "Sleep Duration (min)", "Sleep Analysis (min)", "Total Sleep Time (min)");
+      const readinessRaw = pick(row, "Readiness Score", "Apple Readiness Score");
+
+      const hasVitalData = [weightRaw, hrRaw, hrvRaw, stepsRaw, vo2Raw, fatRaw, sysRaw, diaRaw, sleepHrsRaw, sleepMinRaw, readinessRaw].some(Boolean);
 
       if (hasVitalData) {
+        let sleepScore: number | undefined;
+        if (sleepHrsRaw) {
+          const hrs = parseFloat(sleepHrsRaw);
+          if (!isNaN(hrs) && hrs > 0) sleepScore = sleepScoreFromHours(hrs);
+        } else if (sleepMinRaw) {
+          const mins = parseFloat(sleepMinRaw);
+          if (!isNaN(mins) && mins > 0) sleepScore = sleepScoreFromHours(mins / 60);
+        }
         await storage.upsertHealthStatsByDate(isoDate, {
           date: isoDate,
-          weight: row["Body Mass (lb)"] ? parseFloat(row["Body Mass (lb)"]) : undefined,
-          restingHr: row["Resting Heart Rate (count/min)"] ? Math.round(parseFloat(row["Resting Heart Rate (count/min)"])) : undefined,
-          hrv: row["Heart Rate Variability (ms)"] ? Math.round(parseFloat(row["Heart Rate Variability (ms)"])) : undefined,
-          steps: row["Step Count (count)"] ? Math.round(parseFloat(row["Step Count (count)"])) : undefined,
-          vo2max: row["VO2 Max (mL/min·kg)"] ? parseFloat(row["VO2 Max (mL/min·kg)"]) : undefined,
-          bodyFat: row["Body Fat Percentage (%)"] ? parseFloat(row["Body Fat Percentage (%)"]) : undefined,
-          systolic: row["Blood Pressure Systolic (mmHg)"] ? Math.round(parseFloat(row["Blood Pressure Systolic (mmHg)"])) : undefined,
-          diastolic: row["Blood Pressure Diastolic (mmHg)"] ? Math.round(parseFloat(row["Blood Pressure Diastolic (mmHg)"])) : undefined,
+          weight:         weightRaw  ? Math.round(parseFloat(weightRaw) * 10) / 10        : undefined,
+          restingHr:      hrRaw      ? Math.round(parseFloat(hrRaw))                      : undefined,
+          hrv:            hrvRaw     ? Math.round(parseFloat(hrvRaw))                     : undefined,
+          steps:          stepsRaw   ? Math.round(parseFloat(stepsRaw))                   : undefined,
+          vo2max:         vo2Raw     ? parseFloat(vo2Raw)                                 : undefined,
+          bodyFat:        fatRaw     ? Math.round(parseFloat(fatRaw) * 10) / 10           : undefined,
+          systolic:       sysRaw     ? Math.round(parseFloat(sysRaw))                     : undefined,
+          diastolic:      diaRaw     ? Math.round(parseFloat(diaRaw))                     : undefined,
+          sleepScore:     sleepScore,
+          readinessScore: readinessRaw ? Math.round(parseFloat(readinessRaw))             : undefined,
+          notes: 'real_data',
         });
         synced++;
       }
 
-      // Lab values (Quest Diagnostics synced via Apple Health, or direct Apple Health labs)
+      // Lab values
       for (const lab of labMappings) {
-        const raw = row[lab.field];
+        const raw = pick(row, ...lab.fields);
         if (!raw) continue;
         const value = parseFloat(raw);
         if (isNaN(value)) continue;
         const flag = lab.refLow !== undefined && lab.refHigh !== undefined
-          ? (value < lab.refLow ? 'low' : value > lab.refHigh ? 'high' : 'normal')
-          : null;
+          ? (value < lab.refLow ? 'low' : value > lab.refHigh ? 'high' : 'normal') : null;
         await storage.createLabResult({
-          date: isoDate,
-          testName: lab.testName,
-          value,
-          unit: lab.unit,
-          refLow: lab.refLow ?? null,
-          refHigh: lab.refHigh ?? null,
-          flag,
+          date: isoDate, testName: lab.testName, value, unit: lab.unit,
+          refLow: lab.refLow ?? null, refHigh: lab.refHigh ?? null, flag,
           notes: 'Imported from Apple Health',
         });
         labsSynced++;
       }
     }
-    res.json({ success: true, synced, labsSynced, message: `Imported ${synced} vitals rows + ${labsSynced} lab values from Apple Health` });
+    res.json({ success: true, synced, labsSynced, clearedSeed: hasSeedData, message: `Imported ${synced} days of real data + ${labsSynced} lab values from Apple Health${hasSeedData ? ' (sample data cleared)' : ''}` });
   });
 
   // ── Quest Diagnostics PDF Upload ─────────────────────────────────────────

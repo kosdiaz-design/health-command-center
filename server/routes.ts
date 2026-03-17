@@ -20,7 +20,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/health-stats/latest", async (_req, res) => res.json(await storage.getLatestHealthStats()));
   app.post("/api/health-stats", async (req, res) => {
     const data = insertHealthStatsSchema.parse(req.body);
-    res.json(await storage.createHealthStats(data));
+    // Upsert by date so re-submitting the same day updates rather than errors
+    res.json(await storage.upsertHealthStatsByDate(data.date, data));
   });
 
   // Workouts

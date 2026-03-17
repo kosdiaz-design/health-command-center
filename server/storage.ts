@@ -218,18 +218,19 @@ class SQLiteStorage implements IStorage {
     return r ? toHS(r) : undefined;
   }
   async createHealthStats(data: InsertHealthStats) {
-    const r = db.prepare(`INSERT INTO health_stats (date,weight,body_fat,hrv,resting_hr,sleep_score,readiness_score,systolic,diastolic,vo2max,steps,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    const r = db.prepare(`INSERT INTO health_stats (date,weight,body_fat,hrv,resting_hr,sleep_score,readiness_score,systolic,diastolic,vo2max,steps,blood_oxygen,calories,protein,water,workout_minutes,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       data.date, data.weight ?? null, data.bodyFat ?? null, data.hrv ?? null, data.restingHr ?? null,
       data.sleepScore ?? null, data.readinessScore ?? null, data.systolic ?? null, data.diastolic ?? null,
-      data.vo2max ?? null, data.steps ?? null, data.notes ?? null
+      data.vo2max ?? null, data.steps ?? null, data.bloodOxygen ?? null, data.calories ?? null,
+      data.protein ?? null, data.water ?? null, data.workoutMinutes ?? null, data.notes ?? null
     );
     return toHS(db.prepare(`SELECT * FROM health_stats WHERE id = ?`).get(r.lastInsertRowid));
   }
   async upsertHealthStatsByDate(date: string, data: Partial<InsertHealthStats>) {
     const existing = db.prepare(`SELECT * FROM health_stats WHERE date = ?`).get(date) as any;
     if (existing) {
-      const fields = ['weight','body_fat','hrv','resting_hr','sleep_score','readiness_score','systolic','diastolic','vo2max','steps','notes'];
-      const dataMap: Record<string,any> = { weight: data.weight, body_fat: data.bodyFat, hrv: data.hrv, resting_hr: data.restingHr, sleep_score: data.sleepScore, readiness_score: data.readinessScore, systolic: data.systolic, diastolic: data.diastolic, vo2max: data.vo2max, steps: data.steps, notes: data.notes };
+      const fields = ['weight','body_fat','hrv','resting_hr','sleep_score','readiness_score','systolic','diastolic','vo2max','steps','blood_oxygen','calories','protein','water','workout_minutes','notes'];
+      const dataMap: Record<string,any> = { weight: data.weight, body_fat: data.bodyFat, hrv: data.hrv, resting_hr: data.restingHr, sleep_score: data.sleepScore, readiness_score: data.readinessScore, systolic: data.systolic, diastolic: data.diastolic, vo2max: data.vo2max, steps: data.steps, blood_oxygen: data.bloodOxygen, calories: data.calories, protein: data.protein, water: data.water, workout_minutes: data.workoutMinutes, notes: data.notes };
       const updates = fields.filter(f => dataMap[f] !== undefined && dataMap[f] !== null).map(f => `${f} = ?`);
       const vals = fields.filter(f => dataMap[f] !== undefined && dataMap[f] !== null).map(f => dataMap[f]);
       if (updates.length > 0) db.prepare(`UPDATE health_stats SET ${updates.join(', ')} WHERE date = ?`).run(...vals, date);

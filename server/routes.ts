@@ -457,6 +457,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         'hkquantitytypeidentifierbloodpressurediastolic':  'Blood Pressure Diastolic (mmHg)',
         'hkquantitytypeidentifierappleexercisetime':   'Exercise Time (min)',
         'hkquantitytypeidentifiersleepanalysis':       'Sleep Duration (hr)',
+        'hkquantitytypeidentifieroxygensaturation':    'Oxygen Saturation (%)',
+        'hkquantitytypeidentifieractiveenergyburned':  'Active Energy Burned (kcal)',
+        'hkquantitytypeidentifierdietaryenergyconsumed': 'Dietary Energy Consumed (kcal)',
+        'hkquantitytypeidentifierdietaryprotein':      'Dietary Protein (g)',
+        'hkquantitytypeidentifierdietarywater':        'Dietary Water (mL)',
       };
       for (const row of rows) {
         const typeVal = (row['type'] || row['identifier'] || row['Type'] || '').toLowerCase().replace(/[^a-z]/g, '');
@@ -507,19 +512,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) continue;
 
       // Vitals - try all known field name variants from Health Export app
-      const weightRaw    = pick(row, "Body Mass (lb)", "Weight (lb)", "Body Weight (lb)");
-      const hrRaw        = pick(row, "Resting Heart Rate (count/min)", "Resting HR (bpm)", "Resting Heart Rate (bpm)");
-      const hrvRaw       = pick(row, "Heart Rate Variability (ms)", "HRV (ms)", "HRV SDNN (ms)");
-      const stepsRaw     = pick(row, "Step Count (count)", "Steps (count)", "Step Count");
-      const vo2Raw       = pick(row, "VO2 Max (mL/min\u00b7kg)", "VO2Max (mL/min/kg)", "VO2 Max (ml/min/kg)");
-      const fatRaw       = pick(row, "Body Fat Percentage (%)", "Body Fat (%)");
-      const sysRaw       = pick(row, "Blood Pressure Systolic (mmHg)", "Systolic Blood Pressure (mmHg)");
-      const diaRaw       = pick(row, "Blood Pressure Diastolic (mmHg)", "Diastolic Blood Pressure (mmHg)");
-      const sleepHrsRaw  = pick(row, "Sleep Duration (hr)", "Sleep Analysis (hr)", "Sleep Hours");
-      const sleepMinRaw  = pick(row, "Sleep Duration (min)", "Sleep Analysis (min)", "Total Sleep Time (min)");
-      const readinessRaw = pick(row, "Readiness Score", "Apple Readiness Score");
+      const weightRaw      = pick(row, "Body Mass (lb)", "Weight (lb)", "Body Weight (lb)");
+      const hrRaw          = pick(row, "Resting Heart Rate (count/min)", "Resting HR (bpm)", "Resting Heart Rate (bpm)");
+      const hrvRaw         = pick(row, "Heart Rate Variability (ms)", "HRV (ms)", "HRV SDNN (ms)");
+      const stepsRaw       = pick(row, "Step Count (count)", "Steps (count)", "Step Count");
+      const vo2Raw         = pick(row, "VO2 Max (mL/min\u00b7kg)", "VO2Max (mL/min/kg)", "VO2 Max (ml/min/kg)");
+      const fatRaw         = pick(row, "Body Fat Percentage (%)", "Body Fat (%)");
+      const sysRaw         = pick(row, "Blood Pressure Systolic (mmHg)", "Systolic Blood Pressure (mmHg)");
+      const diaRaw         = pick(row, "Blood Pressure Diastolic (mmHg)", "Diastolic Blood Pressure (mmHg)");
+      const sleepHrsRaw    = pick(row, "Sleep Duration (hr)", "Sleep Analysis (hr)", "Sleep Hours");
+      const sleepMinRaw    = pick(row, "Sleep Duration (min)", "Sleep Analysis (min)", "Total Sleep Time (min)");
+      const readinessRaw   = pick(row, "Readiness Score", "Apple Readiness Score");
+      const spo2Raw        = pick(row, "Oxygen Saturation (%)", "Blood Oxygen Saturation (%)", "SpO2 (%)", "Oxygen Saturation");
+      const caloriesRaw    = pick(row, "Active Energy Burned (kcal)", "Active Calories (kcal)", "Active Energy (kcal)", "Calories Burned (kcal)", "Dietary Energy Consumed (kcal)", "Total Calories (kcal)");
+      const proteinRaw     = pick(row, "Dietary Protein (g)", "Protein (g)");
+      const waterRaw       = pick(row, "Dietary Water (mL)", "Water (mL)", "Water Intake (mL)", "Dietary Water (L)", "Water (L)");
+      const workoutMinRaw  = pick(row, "Exercise Time (min)", "Apple Exercise Time (min)", "Workout Duration (min)", "Move Minutes (min)");
 
-      const hasVitalData = [weightRaw, hrRaw, hrvRaw, stepsRaw, vo2Raw, fatRaw, sysRaw, diaRaw, sleepHrsRaw, sleepMinRaw, readinessRaw].some(Boolean);
+      const hasVitalData = [weightRaw, hrRaw, hrvRaw, stepsRaw, vo2Raw, fatRaw, sysRaw, diaRaw, sleepHrsRaw, sleepMinRaw, readinessRaw, spo2Raw, caloriesRaw, workoutMinRaw].some(Boolean);
 
       if (hasVitalData) {
         let sleepScore: number | undefined;
@@ -530,18 +540,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           const mins = parseFloat(sleepMinRaw);
           if (!isNaN(mins) && mins > 0) sleepScore = sleepScoreFromHours(mins / 60);
         }
+        // Water: convert L → mL if value looks like liters (< 20)
+        let waterVal: number | undefined;
+        if (waterRaw) {
+          const w = parseFloat(waterRaw);
+          if (!isNaN(w)) waterVal = w < 20 ? Math.round(w * 1000) : Math.round(w);
+        }
         await storage.upsertHealthStatsByDate(isoDate, {
           date: isoDate,
-          weight:         weightRaw  ? Math.round(parseFloat(weightRaw) * 10) / 10        : undefined,
-          restingHr:      hrRaw      ? Math.round(parseFloat(hrRaw))                      : undefined,
-          hrv:            hrvRaw     ? Math.round(parseFloat(hrvRaw))                     : undefined,
-          steps:          stepsRaw   ? Math.round(parseFloat(stepsRaw))                   : undefined,
-          vo2max:         vo2Raw     ? parseFloat(vo2Raw)                                 : undefined,
-          bodyFat:        fatRaw     ? Math.round(parseFloat(fatRaw) * 10) / 10           : undefined,
-          systolic:       sysRaw     ? Math.round(parseFloat(sysRaw))                     : undefined,
-          diastolic:      diaRaw     ? Math.round(parseFloat(diaRaw))                     : undefined,
+          weight:         weightRaw     ? Math.round(parseFloat(weightRaw) * 10) / 10        : undefined,
+          restingHr:      hrRaw         ? Math.round(parseFloat(hrRaw))                      : undefined,
+          hrv:            hrvRaw        ? Math.round(parseFloat(hrvRaw))                     : undefined,
+          steps:          stepsRaw      ? Math.round(parseFloat(stepsRaw))                   : undefined,
+          vo2max:         vo2Raw        ? parseFloat(vo2Raw)                                 : undefined,
+          bodyFat:        fatRaw        ? Math.round(parseFloat(fatRaw) * 10) / 10           : undefined,
+          systolic:       sysRaw        ? Math.round(parseFloat(sysRaw))                     : undefined,
+          diastolic:      diaRaw        ? Math.round(parseFloat(diaRaw))                     : undefined,
           sleepScore:     sleepScore,
-          readinessScore: readinessRaw ? Math.round(parseFloat(readinessRaw))             : undefined,
+          readinessScore: readinessRaw  ? Math.round(parseFloat(readinessRaw))               : undefined,
+          bloodOxygen:    spo2Raw       ? Math.round(parseFloat(spo2Raw) * 10) / 10          : undefined,
+          calories:       caloriesRaw   ? Math.round(parseFloat(caloriesRaw))                : undefined,
+          protein:        proteinRaw    ? Math.round(parseFloat(proteinRaw))                 : undefined,
+          water:          waterVal,
+          workoutMinutes: workoutMinRaw ? Math.round(parseFloat(workoutMinRaw))              : undefined,
           notes: 'real_data',
         });
         synced++;

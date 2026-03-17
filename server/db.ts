@@ -27,6 +27,11 @@ db.exec(`
     diastolic INTEGER,
     vo2max REAL,
     steps INTEGER,
+    blood_oxygen REAL,
+    calories INTEGER,
+    protein INTEGER,
+    water REAL,
+    workout_minutes INTEGER,
     notes TEXT
   );
 
@@ -140,5 +145,19 @@ db.exec(`
     done INTEGER DEFAULT 0
   );
 `);
+
+// Run migrations for existing DBs that predate new columns
+const existingCols = (db.prepare(`PRAGMA table_info(health_stats)`).all() as any[]).map((c: any) => c.name);
+const migrateCol = (col: string, type: string) => {
+  if (!existingCols.includes(col)) {
+    db.exec(`ALTER TABLE health_stats ADD COLUMN ${col} ${type}`);
+    console.log(`[db] migrated: added ${col} to health_stats`);
+  }
+};
+migrateCol('blood_oxygen', 'REAL');
+migrateCol('calories', 'INTEGER');
+migrateCol('protein', 'INTEGER');
+migrateCol('water', 'REAL');
+migrateCol('workout_minutes', 'INTEGER');
 
 console.log(`[db] SQLite database at ${dbPath}`);

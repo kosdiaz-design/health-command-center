@@ -17,6 +17,11 @@ export const healthStats = pgTable("health_stats", {
   diastolic: integer("diastolic"),
   vo2max: real("vo2max"),
   steps: integer("steps"),
+  bloodOxygen: real("blood_oxygen"),
+  calories: integer("calories"),
+  protein: integer("protein"),
+  water: real("water"),
+  workoutMinutes: integer("workout_minutes"),
   notes: text("notes"),
 });
 

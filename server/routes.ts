@@ -446,17 +446,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return Math.min(100, Math.max(0, score));
     };
 
-    // Detect long-format CSV (type/value/startDate per row) vs wide-format (one date row, many columns)
-    // Long-format example: type="HKQuantityTypeIdentifierBodyMass", value="87.5", startDate="2026-03-15"
+    // Detect long-format CSV variants:
+    //   HK export: type/identifier + value + startDate columns
+    //   HAE combined: name + qty + date columns (Health Auto Export combined file)
     const firstRow = rows[0] || {};
     const firstKeys = Object.keys(firstRow).map(k => k.toLowerCase());
-    const isLongFormat = (firstKeys.includes('type') || firstKeys.includes('identifier')) &&
-                         firstKeys.includes('value') &&
-                         (firstKeys.some(k => k.includes('date')));
+
+    // HK long-format: has type/identifier + value + date
+    const isHKLongFormat = (firstKeys.includes('type') || firstKeys.includes('identifier')) &&
+                           firstKeys.includes('value') &&
+                           (firstKeys.some(k => k.includes('date')));
+
+    // HAE combined long-format: has name + qty + date  (e.g. HealthAutoExport-YYYY-MM-DD-YYYY-MM-DD.csv)
+    const isHAELongFormat = firstKeys.includes('name') &&
+                            firstKeys.includes('qty') &&
+                            (firstKeys.some(k => k.includes('date')));
+
+    const isLongFormat = isHKLongFormat || isHAELongFormat;
 
     if (isLongFormat) {
       // Long-format: pivot rows into wide-format grouped by date
       const dateMap = new Map<string, Record<string, string>>();
+
+      // HK Apple Health export: HKQuantityTypeIdentifier* identifiers
       const HK_MAP: Record<string, string> = {
         'hkquantitytypeidentifierbodymass':            'Body Mass (lb)',
         'hkquantitytypeidentifierrestingheartrate':    'Resting Heart Rate (count/min)',
@@ -474,18 +486,91 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         'hkquantitytypeidentifierdietaryprotein':      'Dietary Protein (g)',
         'hkquantitytypeidentifierdietarywater':        'Dietary Water (mL)',
       };
+
+      // HAE combined export: plain-English metric names → our internal column names
+      const NAME_MAP: Record<string, string> = {
+        // Weight / body composition
+        'body mass':                    'Body Mass (lb)',
+        'weight':                       'Body Mass (lb)',
+        'body weight':                  'Body Mass (lb)',
+        'body fat percentage':          'Body Fat Percentage (%)',
+        'body fat':                     'Body Fat Percentage (%)',
+        // Cardiac
+        'resting heart rate':           'Resting Heart Rate (count/min)',
+        'resting hr':                   'Resting Heart Rate (count/min)',
+        'heart rate variability':       'Heart Rate Variability (ms)',
+        'hrv':                          'Heart Rate Variability (ms)',
+        'blood pressure systolic':      'Blood Pressure Systolic (mmHg)',
+        'systolic blood pressure':      'Blood Pressure Systolic (mmHg)',
+        'blood pressure diastolic':     'Blood Pressure Diastolic (mmHg)',
+        'diastolic blood pressure':     'Blood Pressure Diastolic (mmHg)',
+        // Activity
+        'steps':                        'Step Count (count)',
+        'step count':                   'Step Count (count)',
+        'step counts':                  'Step Count (count)',
+        'active energy':                'Active Energy Burned (kcal)',
+        'active energy burned':         'Active Energy Burned (kcal)',
+        'active calories':              'Active Energy Burned (kcal)',
+        'apple exercise time':          'Exercise Time (min)',
+        'exercise time':                'Exercise Time (min)',
+        'workout time':                 'Exercise Time (min)',
+        'vo2 max':                      'VO2 Max (mL/min·kg)',
+        'vo2max':                       'VO2 Max (mL/min·kg)',
+        // Blood / O2
+        'blood oxygen saturation':      'Oxygen Saturation (%)',
+        'oxygen saturation':            'Oxygen Saturation (%)',
+        'spo2':                         'Oxygen Saturation (%)',
+        // Sleep
+        'sleep duration':               'Sleep Duration (hr)',
+        'time in bed':                  'Sleep Duration (hr)',
+        'sleep analysis':               'Sleep Duration (hr)',
+        // Nutrition
+        'dietary protein':              'Dietary Protein (g)',
+        'protein':                      'Dietary Protein (g)',
+        'dietary water':                'Dietary Water (mL)',
+        'water':                        'Dietary Water (mL)',
+        'dietary energy consumed':      'Dietary Energy Consumed (kcal)',
+        'dietary calories':             'Dietary Energy Consumed (kcal)',
+      };
+
       for (const row of rows) {
-        const typeVal = (row['type'] || row['identifier'] || row['Type'] || '').toLowerCase().replace(/[^a-z]/g, '');
-        const value   = row['value'] || row['Value'] || '';
+        let typeVal: string;
+        let value: string;
         const rawDate = row['startDate'] || row['date'] || row['Date'] || row['Start Date'] || '';
-        if (!rawDate || !value) continue;
+        if (!rawDate) continue;
         const isoDate = rawDate.split('T')[0].split(' ')[0];
         if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) continue;
-        const colName = HK_MAP[typeVal];
+
+        let colName: string | undefined;
+
+        if (isHAELongFormat) {
+          // HAE combined: use name column + qty column
+          const metricName = (row['name'] || row['Name'] || '').trim().toLowerCase();
+          value = row['qty'] || row['Qty'] || '';
+          if (!metricName || !value) continue;
+          // Exact match first
+          colName = NAME_MAP[metricName];
+          // Fuzzy substring match if no exact hit
+          if (!colName) {
+            for (const [key, mapped] of Object.entries(NAME_MAP)) {
+              if (metricName.includes(key) || key.includes(metricName)) {
+                colName = mapped;
+                break;
+              }
+            }
+          }
+        } else {
+          // HK long-format: use type/identifier column + value column
+          typeVal = (row['type'] || row['identifier'] || row['Type'] || '').toLowerCase().replace(/[^a-z]/g, '');
+          value = row['value'] || row['Value'] || '';
+          if (!typeVal || !value) continue;
+          colName = HK_MAP[typeVal];
+        }
+
         if (!colName) continue;
         if (!dateMap.has(isoDate)) dateMap.set(isoDate, { Date: isoDate });
         const entry = dateMap.get(isoDate)!;
-        // For step count, accumulate; for others take latest
+        // For step count, accumulate daily totals; for others take latest
         if (colName === 'Step Count (count)') {
           entry[colName] = String((parseFloat(entry[colName] || '0') + parseFloat(value)));
         } else {

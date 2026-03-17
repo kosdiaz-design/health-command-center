@@ -499,31 +499,78 @@ function AppleHealthCard() {
     setImporting(true);
     setImportStatus(`Reading ${fileArr.length} file${fileArr.length > 1 ? 's' : ''}…`);
     try {
-      let rows: Array<Record<string,string>>;
-      let filesProcessed = fileArr.length;
+      let rows: Array<Record<string,string>> = [];
+      let filesProcessed = 0;
       let skippedFiles: string[] = [];
 
-      if (fileArr.length === 1) {
-        // Single file — try direct CSV parse first (Health Export CSV / combined export)
-        const text = await fileArr[0].text();
-        const direct = parseCSV(text.replace(/^\uFEFF/, ''));
+      // Strategy: for each file, first try direct CSV parse (wide format / combined export).
+      // If that yields rows with a Date column, use it directly.
+      // Otherwise treat it as a per-metric file keyed by filename.
+      const combinedRows: Array<Record<string,string>> = [];
+      const perMetricFiles: File[] = [];
+
+      for (const file of fileArr) {
+        const text = await file.text();
+        const direct = parseCSV(text);
         if (direct.length > 0) {
-          rows = direct;
-        } else {
-          // Fall back to per-metric merge with single file
-          const result = await mergePerMetricFiles(fileArr);
-          rows = result.merged;
-          filesProcessed = result.filesProcessed;
-          skippedFiles = result.skippedFiles;
+          const firstRow = direct[0];
+          const colKeys = Object.keys(firstRow).map(k => k.toLowerCase());
+          const hasDate = colKeys.some(k => k.includes('date'));
+          const hasName = colKeys.includes('name');
+          const hasQty  = colKeys.includes('qty');
+
+          // HAE combined long-format: Date + name + qty (+ optional units)
+          // Send as-is — backend will pivot via NAME_MAP
+          if (hasDate && hasName && hasQty) {
+            combinedRows.push(...direct);
+            filesProcessed++;
+            continue;
+          }
+          // Per-metric file: Date + qty only (≤3 cols, no name column)
+          if (hasDate && hasQty && !hasName) {
+            perMetricFiles.push(file);
+            continue;
+          }
+          // Wide-format file (many metric columns, no 'name'/'qty' pattern)
+          if (hasDate && colKeys.length > 3 && !hasName && !hasQty) {
+            combinedRows.push(...direct);
+            filesProcessed++;
+            continue;
+          }
+          // Has Date but unclear — try as combined first
+          if (hasDate) {
+            combinedRows.push(...direct);
+            filesProcessed++;
+            continue;
+          }
         }
-      } else {
-        // Multiple files — treat as per-metric collection
-        setImportStatus(`Merging ${fileArr.length} metric files by date…`);
-        const result = await mergePerMetricFiles(fileArr);
-        rows = result.merged;
-        filesProcessed = result.filesProcessed;
+        // Try as per-metric file
+        perMetricFiles.push(file);
+      }
+
+      // Merge per-metric files
+      if (perMetricFiles.length > 0) {
+        setImportStatus(`Merging ${perMetricFiles.length} per-metric files by date…`);
+        const result = await mergePerMetricFiles(perMetricFiles);
+        combinedRows.push(...result.merged);
+        filesProcessed += result.filesProcessed;
         skippedFiles = result.skippedFiles;
       }
+
+      // De-duplicate and merge all rows by date
+      const dateMap = new Map<string, Record<string,string>>();
+      for (const row of combinedRows) {
+        const d = (row['Date'] || row['date'] || '').split('T')[0].split(' ')[0];
+        if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+        if (!dateMap.has(d)) dateMap.set(d, { Date: d });
+        const entry = dateMap.get(d)!;
+        for (const [k, v] of Object.entries(row)) {
+          if (k.toLowerCase() === 'date' || !v) continue;
+          if (!entry[k]) entry[k] = v; // first value wins per metric per day
+        }
+      }
+      rows = Array.from(dateMap.values());
+      if (filesProcessed === 0) filesProcessed = fileArr.length - skippedFiles.length;
 
       if (rows.length === 0) {
         toast({ title: "Nothing to import", description: `Processed ${filesProcessed} files but found no date-matched data. Check file names match Health Auto Export metrics.`, variant: "destructive" });

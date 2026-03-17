@@ -6,14 +6,34 @@ import { Badge } from "@/components/ui/badge";
 import { Heart, Activity, Moon, Zap, Scale, TrendingUp, TrendingDown, Minus, Droplets, Flame, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
+// ── Source badge ─────────────────────────────────────────────────────────────
+type Source = "oura" | "withings" | "apple" | "manual";
+const SOURCE_LABELS: Record<Source, { label: string; color: string }> = {
+  oura:     { label: "Oura",         color: "bg-indigo-500/15 text-indigo-500 dark:text-indigo-400" },
+  withings: { label: "Withings",     color: "bg-teal-500/15 text-teal-600 dark:text-teal-400" },
+  apple:    { label: "Apple Health", color: "bg-rose-500/15 text-rose-600 dark:text-rose-400" },
+  manual:   { label: "Manual",       color: "bg-muted text-muted-foreground" },
+};
+
+function SourceBadge({ source }: { source: Source }) {
+  const s = SOURCE_LABELS[source];
+  return (
+    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${s.color} leading-none`}>
+      {s.label}
+    </span>
+  );
+}
+
 function formatStatValue(value: string | number | null | undefined, decimals = 0): string | number | null | undefined {
   if (value === null || value === undefined) return value;
   if (typeof value === 'number') return +value.toFixed(decimals);
   return value;
 }
 
-function StatCard({ label, value, unit, icon: Icon, delta, deltaLabel, color, testId, decimals = 0 }: {
-  label: string; value: string | number | null | undefined; unit?: string; icon: any; delta?: number; deltaLabel?: string; color?: string; testId?: string; decimals?: number;
+function StatCard({ label, value, unit, icon: Icon, delta, deltaLabel, color, testId, decimals = 0, source }: {
+  label: string; value: string | number | null | undefined; unit?: string; icon: any;
+  delta?: number; deltaLabel?: string; color?: string; testId?: string; decimals?: number;
+  source?: Source;
 }) {
   const DeltaIcon = !delta ? Minus : delta > 0 ? TrendingUp : TrendingDown;
   const deltaColor = !delta ? "text-muted-foreground" : delta > 0 ? "text-green-500" : "text-red-400";
@@ -21,7 +41,7 @@ function StatCard({ label, value, unit, icon: Icon, delta, deltaLabel, color, te
   return (
     <Card data-testid={testId} className="bg-card border-card-border">
       <CardContent className="pt-5 pb-4 px-5">
-        <div className="flex items-start justify-between mb-3">
+        <div className="flex items-start justify-between mb-2">
           <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</span>
           <div className={`p-1.5 rounded-md ${color || "bg-primary/10"}`}>
             <Icon size={14} className={color ? "text-white" : "text-primary"} />
@@ -33,12 +53,16 @@ function StatCard({ label, value, unit, icon: Icon, delta, deltaLabel, color, te
           </span>
           {unit && <span className="text-sm text-muted-foreground mb-0.5">{unit}</span>}
         </div>
-        {deltaLabel && (
-          <div className={`flex items-center gap-1 mt-1.5 text-xs ${deltaColor}`}>
-            <DeltaIcon size={11} />
-            <span>{deltaLabel}</span>
-          </div>
-        )}
+        <div className="flex items-center justify-between mt-1.5 min-h-[18px]">
+          {deltaLabel && (
+            <div className={`flex items-center gap-1 text-xs ${deltaColor}`}>
+              <DeltaIcon size={11} />
+              <span>{deltaLabel}</span>
+            </div>
+          )}
+          {!deltaLabel && <span />}
+          {source && value !== null && value !== undefined && <SourceBadge source={source} />}
+        </div>
       </CardContent>
     </Card>
   );
@@ -68,6 +92,27 @@ export default function Dashboard() {
     queryKey: ["/api/cardiac-events"],
     queryFn: () => apiRequest("GET", "/api/cardiac-events"),
   });
+  const { data: integrationStatus } = useQuery<{
+    oura: { connected: boolean }; withings: { connected: boolean };
+  }>({
+    queryKey: ["/api/integrations/status"],
+    queryFn: () => apiRequest("GET", "/api/integrations/status"),
+  });
+
+  const ouraConnected    = integrationStatus?.oura?.connected ?? false;
+  const withingsConnected = integrationStatus?.withings?.connected ?? false;
+
+  // Determine source for each metric type
+  // Oura: HRV, sleep score, readiness, resting HR, steps
+  // Withings: weight, body fat, blood pressure
+  // Apple Health: everything when synced via CSV (fallback)
+  const hrvSource:       Source = ouraConnected    ? "oura"    : "apple";
+  const sleepSource:     Source = ouraConnected    ? "oura"    : "apple";
+  const hrSource:        Source = ouraConnected    ? "oura"    : "apple";
+  const stepsSource:     Source = ouraConnected    ? "oura"    : "apple";
+  const weightSource:    Source = withingsConnected ? "withings" : "apple";
+  const bpSource:        Source = withingsConnected ? "withings" : "apple";
+  const bodyFatSource:   Source = withingsConnected ? "withings" : "apple";
 
   const latest = statsArr?.[0];
   const prev = statsArr?.[1];
@@ -92,13 +137,9 @@ export default function Dashboard() {
         : { label: "High", color: "text-red-400" }
     : null;
 
-  // Weight trend
   const weightDelta = (latest?.weight && prev?.weight) ? +(latest.weight - prev.weight).toFixed(1) : 0;
-
-  // HRV trend
   const hrvDelta = (latest?.hrv && prev?.hrv) ? latest.hrv - prev.hrv : 0;
 
-  // Health score
   const healthScore = (() => {
     if (!latest) return null;
     let score = 0;
@@ -108,6 +149,37 @@ export default function Dashboard() {
     if (latest.restingHr) score += Math.max(0, (1 - (latest.restingHr - 50) / 40)) * 100 * 0.2;
     return Math.round(score);
   })();
+
+  // HRV chart — last 14 days only, sorted oldest→newest
+  const chartData = statsArr
+    ? [...statsArr]
+        .filter(s => s.hrv)
+        .slice(0, 14)
+        .reverse()
+    : [];
+  const maxHrv = chartData.length > 0 ? Math.max(...chartData.map(s => s.hrv || 0)) : 1;
+  const minHrv = chartData.length > 0 ? Math.min(...chartData.map(s => s.hrv || 0)) : 0;
+  // Normalize bar heights to use full chart area (min = 20%, max = 100%)
+  const barPct = (hrv: number) => {
+    if (maxHrv === minHrv) return 70;
+    return 20 + ((hrv - minHrv) / (maxHrv - minHrv)) * 80;
+  };
+  const fmtChartDate = (iso: string) => {
+    const d = new Date(iso + 'T12:00:00');
+    return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' });
+  };
+
+  // Data source legend — show which integrations are feeding the dashboard
+  const activeSources: Array<{ source: Source; fields: string }> = [];
+  if (ouraConnected)     activeSources.push({ source: "oura",     fields: "HRV · Sleep · Readiness · Resting HR" });
+  if (withingsConnected) activeSources.push({ source: "withings", fields: "Weight · Body Fat · Blood Pressure" });
+  if (!ouraConnected || !withingsConnected)
+    activeSources.push({ source: "apple", fields: ouraConnected
+      ? "Weight · Body Fat · Blood Pressure · Steps"
+      : withingsConnected
+        ? "HRV · Sleep · Resting HR · Steps · VO2 Max"
+        : "All metrics"
+    });
 
   return (
     <div className="space-y-6 max-w-7xl">
@@ -126,6 +198,17 @@ export default function Dashboard() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Data source legend */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted-foreground font-medium">Data from:</span>
+        {activeSources.map(({ source, fields }) => (
+          <div key={source} className="flex items-center gap-1.5">
+            <SourceBadge source={source} />
+            <span className="text-xs text-muted-foreground">{fields}</span>
+          </div>
+        ))}
       </div>
 
       {/* Cardiac Alert Banner */}
@@ -149,19 +232,26 @@ export default function Dashboard() {
       ) : (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard label="HRV" value={latest?.hrv} unit="ms" icon={Activity} testId="stat-hrv"
-            delta={hrvDelta} deltaLabel={`${Math.abs(hrvDelta)} ms vs last week`} />
+            delta={hrvDelta} deltaLabel={`${Math.abs(hrvDelta)} ms vs yesterday`}
+            source={latest?.hrv ? hrvSource : undefined} />
           <StatCard label="Resting HR" value={latest?.restingHr} unit="bpm" icon={Heart} testId="stat-rhr"
-            deltaLabel={latest?.restingHr ? (latest.restingHr < 60 ? "Athletic range" : "Within range") : undefined} />
+            deltaLabel={latest?.restingHr ? (latest.restingHr < 60 ? "Athletic range" : "Within range") : undefined}
+            source={latest?.restingHr ? hrSource : undefined} />
           <StatCard label="Sleep Score" value={latest?.sleepScore} icon={Moon} testId="stat-sleep"
-            deltaLabel={latest?.sleepScore && latest.sleepScore >= 80 ? "Excellent" : latest?.sleepScore && latest.sleepScore >= 65 ? "Good" : "Needs work"} />
+            deltaLabel={latest?.sleepScore && latest.sleepScore >= 80 ? "Excellent" : latest?.sleepScore && latest.sleepScore >= 65 ? "Good" : "Needs work"}
+            source={latest?.sleepScore ? sleepSource : undefined} />
           <StatCard label="Body Weight" value={latest?.weight} unit="lbs" icon={Scale} testId="stat-weight" decimals={1}
-            delta={-weightDelta} deltaLabel={`${Math.abs(weightDelta)} lbs vs last week`} />
+            delta={-weightDelta} deltaLabel={`${Math.abs(weightDelta)} lbs vs yesterday`}
+            source={latest?.weight ? weightSource : undefined} />
           <StatCard label="Blood Pressure" value={latest ? `${latest.systolic}/${latest.diastolic}` : null} unit="mmHg" icon={Heart} testId="stat-bp"
-            deltaLabel={bpStatus?.label} color={latest?.systolic && latest.systolic >= 130 ? "bg-red-500/15" : "bg-green-500/15"} />
+            deltaLabel={bpStatus?.label} color={latest?.systolic && latest.systolic >= 130 ? "bg-red-500/15" : "bg-green-500/15"}
+            source={latest?.systolic ? bpSource : undefined} />
           <StatCard label="Health Score" value={healthScore} unit="/100" icon={Zap} testId="stat-health-score"
             deltaLabel="Composite index" />
-          <StatCard label="Body Fat" value={latest?.bodyFat} unit="%" icon={TrendingDown} testId="stat-bodyfat" decimals={1} />
-          <StatCard label="Steps Today" value={latest?.steps?.toLocaleString()} icon={Activity} testId="stat-steps" />
+          <StatCard label="Body Fat" value={latest?.bodyFat} unit="%" icon={TrendingDown} testId="stat-bodyfat" decimals={1}
+            source={latest?.bodyFat ? bodyFatSource : undefined} />
+          <StatCard label="Steps Today" value={latest?.steps?.toLocaleString()} icon={Activity} testId="stat-steps"
+            source={latest?.steps ? stepsSource : undefined} />
         </div>
       )}
 
@@ -274,28 +364,48 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* Weekly Trend Chart (simple bar) */}
-      {statsArr && statsArr.length > 1 && (
+      {/* HRV Trend Chart — last 14 days, fixed height */}
+      {chartData.length > 1 && (
         <Card className="bg-card border-card-border">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold">8-Week HRV Trend</CardTitle>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-semibold">HRV Trend — Last {chartData.length} Days</CardTitle>
+              <SourceBadge source={hrvSource} />
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="flex items-end gap-2 h-20">
-              {[...statsArr].reverse().map((s, i) => {
-                const maxHrv = Math.max(...statsArr.map(x => x.hrv || 0));
-                const pct = s.hrv ? (s.hrv / maxHrv) * 100 : 10;
+            {/* Chart area — fixed 72px tall, bars normalized min→max */}
+            <div className="flex items-end gap-1" style={{ height: "72px" }}>
+              {chartData.map((s, i) => {
+                const pct = barPct(s.hrv || 0);
+                const isLatest = i === chartData.length - 1;
                 return (
-                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                    <div className="w-full rounded-sm bg-primary/20 relative overflow-hidden" style={{ height: "64px" }}>
-                      <div className="absolute bottom-0 w-full bg-primary rounded-sm transition-all" style={{ height: `${pct}%` }} />
-                    </div>
-                    <span className="text-xs text-muted-foreground tabular-nums">{s.hrv}</span>
+                  <div key={i} className="flex-1 flex flex-col justify-end" style={{ height: "72px" }}>
+                    <div
+                      className={`w-full rounded-sm transition-all ${isLatest ? "bg-primary" : "bg-primary/30"}`}
+                      style={{ height: `${pct}%` }}
+                      title={`${s.date}: ${s.hrv} ms`}
+                    />
                   </div>
                 );
               })}
             </div>
-            <p className="text-xs text-muted-foreground mt-2">Most recent on right · ms</p>
+            {/* X-axis labels — only show every 2nd to avoid crowding */}
+            <div className="flex gap-1 mt-1">
+              {chartData.map((s, i) => (
+                <div key={i} className="flex-1 text-center">
+                  {i % 2 === 0 ? (
+                    <span className="text-[10px] text-muted-foreground tabular-nums">{fmtChartDate(s.date)}</span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            {/* Value labels only for first, last, min, max */}
+            <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+              <span>Low: <span className="text-foreground font-medium">{minHrv} ms</span></span>
+              <span>Latest: <span className="text-primary font-semibold">{chartData[chartData.length - 1]?.hrv} ms</span></span>
+              <span>High: <span className="text-foreground font-medium">{maxHrv} ms</span></span>
+            </div>
           </CardContent>
         </Card>
       )}

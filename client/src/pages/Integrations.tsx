@@ -348,19 +348,72 @@ function WithingsCSVCard() {
 }
 
 // ── Apple Health CSV uploader ───────────────────────────────────────────────
+// Maps Health Auto Export per-metric filenames to wide-format column names
+const HAE_FILENAME_MAP: Record<string, string> = {
+  'step_count':                    'Step Count (count)',
+  'steps':                         'Step Count (count)',
+  'resting_heart_rate':            'Resting Heart Rate (count/min)',
+  'heart_rate_variability':        'Heart Rate Variability (ms)',
+  'hrv':                           'Heart Rate Variability (ms)',
+  'vo2max':                        'VO2 Max (mL/min·kg)',
+  'vo2_max':                       'VO2 Max (mL/min·kg)',
+  'weight_body_mass':              'Body Mass (lb)',
+  'body_mass':                     'Body Mass (lb)',
+  'weight':                        'Body Mass (lb)',
+  'body_fat_percentage':           'Body Fat Percentage (%)',
+  'body_fat':                      'Body Fat Percentage (%)',
+  'blood_pressure_systolic':       'Blood Pressure Systolic (mmHg)',
+  'blood_pressure_diastolic':      'Blood Pressure Diastolic (mmHg)',
+  'sleep_analysis':                'Sleep Duration (hr)',
+  'blood_oxygen_saturation':       'Oxygen Saturation (%)',
+  'oxygen_saturation':             'Oxygen Saturation (%)',
+  'active_energy':                 'Active Energy Burned (kcal)',
+  'active_energy_burned':          'Active Energy Burned (kcal)',
+  'dietary_protein':               'Dietary Protein (g)',
+  'protein':                       'Dietary Protein (g)',
+  'dietary_water':                 'Dietary Water (mL)',
+  'water':                         'Dietary Water (mL)',
+  'apple_exercise_time':           'Exercise Time (min)',
+  'exercise_time':                 'Exercise Time (min)',
+  'apple_stand_time':              'Exercise Time (min)',
+};
+
+function detectMetricFromFilename(filename: string): string | null {
+  // Strip path, extension, and trailing timestamps like _20260209_210736
+  const base = filename.toLowerCase()
+    .replace(/\.csv$/i, '')
+    .replace(/_?\d{8}[_\-]?\d{0,6}$/, '')  // strip trailing date/time stamp
+    .replace(/-/g, '_')
+    .trim();
+  // Direct match
+  if (HAE_FILENAME_MAP[base]) return HAE_FILENAME_MAP[base];
+  // Prefix/substring match
+  for (const [key, col] of Object.entries(HAE_FILENAME_MAP)) {
+    if (base.includes(key) || key.includes(base)) return col;
+  }
+  return null;
+}
+
 function AppleHealthCard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [dragOver, setDragOver] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [lastImport, setLastImport] = useState<{ rows: number; labs: number; cleared: boolean; date: string; cols: string[]; matchedCols: string[]; isLongFormat: boolean; totalRows: number; rawPreview?: string; fileName?: string } | null>(null);
+  const [importStatus, setImportStatus] = useState('');
+  const [lastImport, setLastImport] = useState<{
+    rows: number; labs: number; cleared: boolean; date: string;
+    cols: string[]; matchedCols: string[]; isLongFormat: boolean;
+    totalRows: number; filesProcessed: number; skippedFiles: string[];
+  } | null>(null);
   const [showData, setShowData] = useState(false);
 
-  const dataPoints = ["Weight", "Resting HR", "HRV", "Steps", "VO2 Max", "Body Fat", "Blood Pressure", "Sleep"];
+  const dataPoints = ["Weight", "Resting HR", "HRV", "Steps", "VO2 Max", "Body Fat", "Blood Pressure", "Sleep", "Blood Oxygen", "Calories", "Protein", "Water"];
 
-  // Robust CSV parser — handles quoted fields with commas inside
+  // Robust CSV parser — handles quoted fields, BOM, various line endings
   const parseCSV = (text: string): Array<Record<string, string>> => {
-    const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim().split("\n");
+    // Strip BOM if present
+    const clean = text.replace(/^\uFEFF/, '').replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+    const lines = clean.split("\n");
     if (lines.length < 2) return [];
 
     const parseLine = (line: string): string[] => {
@@ -369,7 +422,7 @@ function AppleHealthCard() {
       for (let i = 0; i < line.length; i++) {
         const ch = line[i];
         if (ch === '"') {
-          if (inQ && line[i + 1] === '"') { cur += '"'; i++; } // escaped quote
+          if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
           else { inQ = !inQ; }
         } else if (ch === ',' && !inQ) {
           fields.push(cur.trim()); cur = "";
@@ -388,34 +441,101 @@ function AppleHealthCard() {
       });
   };
 
-  const handleFile = async (file: File) => {
-    if (!file.name.toLowerCase().endsWith(".csv")) {
-      toast({ title: "CSV only", description: `Got "${file.name}" — please upload a .csv file.`, variant: "destructive" });
+  // Merge multiple per-metric CSVs into a single wide-format date-keyed map
+  const mergePerMetricFiles = async (files: File[]): Promise<{ merged: Array<Record<string,string>>; filesProcessed: number; skippedFiles: string[] }> => {
+    const dateMap = new Map<string, Record<string, string>>();
+    let filesProcessed = 0;
+    const skippedFiles: string[] = [];
+
+    for (const file of files) {
+      const colName = detectMetricFromFilename(file.name);
+      if (!colName) {
+        skippedFiles.push(file.name);
+        continue;
+      }
+      const text = await file.text();
+      const rows = parseCSV(text);
+      if (rows.length === 0) { skippedFiles.push(file.name); continue; }
+
+      // Health Auto Export per-metric CSV: columns are Date + qty (+ units)
+      // Date may be "2026-02-09 00:00:00 -0500" or "2026-02-09"
+      for (const row of rows) {
+        const rawDate = row['Date'] || row['date'] || row['startDate'] || row['Start Date'] || '';
+        if (!rawDate) continue;
+        const isoDate = rawDate.split('T')[0].split(' ')[0].trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) continue;
+
+        const val = row['qty'] || row['Qty'] || row['value'] || row['Value'] || '';
+        if (!val) continue;
+
+        if (!dateMap.has(isoDate)) dateMap.set(isoDate, { Date: isoDate });
+        const entry = dateMap.get(isoDate)!;
+
+        // For steps, accumulate across multiple readings per day
+        if (colName === 'Step Count (count)') {
+          entry[colName] = String((parseFloat(entry[colName] || '0') + parseFloat(val)));
+        } else {
+          // For weight — convert kg → lbs if units say kg
+          const units = (row['units'] || row['Units'] || '').toLowerCase();
+          if (colName === 'Body Mass (lb)' && (units === 'kg' || units === 'kilograms')) {
+            entry[colName] = String(parseFloat(val) * 2.20462);
+          } else {
+            entry[colName] = val;
+          }
+        }
+      }
+      filesProcessed++;
+    }
+
+    return { merged: Array.from(dateMap.values()), filesProcessed, skippedFiles };
+  };
+
+  const handleFiles = async (files: FileList | File[]) => {
+    const fileArr = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.csv'));
+    if (fileArr.length === 0) {
+      toast({ title: "No CSV files", description: "Please select .csv files from Health Auto Export.", variant: "destructive" });
       return;
     }
     setImporting(true);
+    setImportStatus(`Reading ${fileArr.length} file${fileArr.length > 1 ? 's' : ''}…`);
     try {
-      const text = await file.text();
-      // Grab first 600 chars raw for diagnostic display
-      const rawPreview = text.slice(0, 600);
-      const rows = parseCSV(text);
+      let rows: Array<Record<string,string>>;
+      let filesProcessed = fileArr.length;
+      let skippedFiles: string[] = [];
+
+      if (fileArr.length === 1) {
+        // Single file — try direct CSV parse first (Health Export CSV / combined export)
+        const text = await fileArr[0].text();
+        const direct = parseCSV(text.replace(/^\uFEFF/, ''));
+        if (direct.length > 0) {
+          rows = direct;
+        } else {
+          // Fall back to per-metric merge with single file
+          const result = await mergePerMetricFiles(fileArr);
+          rows = result.merged;
+          filesProcessed = result.filesProcessed;
+          skippedFiles = result.skippedFiles;
+        }
+      } else {
+        // Multiple files — treat as per-metric collection
+        setImportStatus(`Merging ${fileArr.length} metric files by date…`);
+        const result = await mergePerMetricFiles(fileArr);
+        rows = result.merged;
+        filesProcessed = result.filesProcessed;
+        skippedFiles = result.skippedFiles;
+      }
 
       if (rows.length === 0) {
-        // Show raw content so we can diagnose the format issue
-        setLastImport({
-          rows: 0, labs: 0, cleared: false,
-          date: new Date().toLocaleTimeString(),
-          cols: [], matchedCols: [], isLongFormat: false, totalRows: 0,
-          rawPreview, fileName: file.name,
-        });
-        toast({ title: "Can't read file", description: "File parsed to 0 rows — check the raw preview below to diagnose.", variant: "destructive" });
+        toast({ title: "Nothing to import", description: `Processed ${filesProcessed} files but found no date-matched data. Check file names match Health Auto Export metrics.`, variant: "destructive" });
+        setLastImport({ rows: 0, labs: 0, cleared: false, date: new Date().toLocaleTimeString(), cols: [], matchedCols: [], isLongFormat: false, totalRows: 0, filesProcessed, skippedFiles });
         return;
       }
 
-      // Step 1: Preview — get column analysis without writing anything
+      // Preview
+      setImportStatus(`Uploading ${rows.length} days of data…`);
       const preview = await apiRequest("POST", "/api/integrations/apple-health/preview", { rows: rows.slice(0, 50) });
 
-      // Step 2: Upload in chunks of 500 rows to avoid payload limits
+      // Upload in chunks
       const CHUNK = 500;
       let totalSynced = 0; let totalLabs = 0; let clearedSeed = false;
       for (let i = 0; i < rows.length; i += CHUNK) {
@@ -432,27 +552,22 @@ function AppleHealthCard() {
         cols: preview.columns || [],
         matchedCols: preview.matchedColumns || [],
         isLongFormat: preview.isLongFormat || false,
-        totalRows: preview.totalRows || rows.length,
-        rawPreview, fileName: file.name,
+        totalRows: rows.length,
+        filesProcessed, skippedFiles,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/health-stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/lab-results"] });
 
       if (totalSynced === 0) {
-        toast({
-          title: "0 rows matched",
-          description: preview.isLongFormat
-            ? `Long-format detected. Found ${(preview.uniqueTypesIfLongFormat || []).length} HK types. Check column panel below.`
-            : `Wide-format: ${preview.columns?.length} columns found, ${(preview.matchedColumns || []).length} recognized. Check panel below.`,
-          variant: "destructive",
-        });
+        toast({ title: "0 days matched", description: `Merged ${rows.length} date rows but no metrics matched. Check column panel below.`, variant: "destructive" });
       } else {
-        toast({ title: "Import complete", description: `${totalSynced} days imported${totalLabs > 0 ? ` + ${totalLabs} lab values` : ""}` });
+        toast({ title: "Import complete", description: `${totalSynced} days imported from ${filesProcessed} file${filesProcessed > 1 ? 's' : ''}${totalLabs > 0 ? ` + ${totalLabs} lab values` : ''}` });
       }
     } catch (e: any) {
       toast({ title: "Import failed", description: e.message, variant: "destructive" });
     } finally {
       setImporting(false);
+      setImportStatus('');
     }
   };
 
@@ -468,9 +583,10 @@ function AppleHealthCard() {
               <span className="font-semibold text-sm">Apple Health</span>
               <Badge className="text-xs px-1.5 py-0 border-0 bg-muted text-muted-foreground">CSV Upload</Badge>
             </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              Use <strong>Health Auto Export</strong> (App Store, free) — Quick Export, aggregated by Day. Also works with <strong>Health Export CSV</strong> by Lybik.
+            <p className="text-xs text-muted-foreground mb-1">
+              Supports <strong>Health Auto Export</strong> — select all your metric CSV files at once and drop them here. Also works with a single combined CSV from <strong>Health Export CSV</strong> by Lybik.
             </p>
+            <p className="text-xs text-primary/80 mb-3 font-medium">💡 Select multiple files at once — hold Cmd (Mac) or Ctrl (Windows) to pick all metric files together.</p>
 
             <button
               onClick={() => setShowData(v => !v)}
@@ -488,11 +604,11 @@ function AppleHealthCard() {
               </div>
             )}
 
-            {/* Drop zone */}
+            {/* Drop zone — accepts multiple files */}
             <div
               onDragOver={e => { e.preventDefault(); setDragOver(true); }}
               onDragLeave={() => setDragOver(false)}
-              onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
+              onDrop={e => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); }}
               className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors cursor-pointer mb-3 ${dragOver ? "border-primary bg-primary/5" : "border-card-border hover:border-primary/50"}`}
               onClick={() => document.getElementById("apple-health-file")?.click()}
               data-testid="dropzone-apple-health"
@@ -501,17 +617,18 @@ function AppleHealthCard() {
                 id="apple-health-file"
                 type="file"
                 accept=".csv"
+                multiple
                 className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+                onChange={e => { if (e.target.files?.length) handleFiles(e.target.files); }}
               />
               {importing ? (
                 <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
-                  <RefreshCw size={14} className="animate-spin" /> Importing…
+                  <RefreshCw size={14} className="animate-spin" /> {importStatus || 'Importing…'}
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-1">
                   <FileUp size={20} className="text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground">Drag & drop CSV, or click to browse</span>
+                  <span className="text-xs text-muted-foreground">Drag & drop CSV files (one or many), or click to browse</span>
                 </div>
               )}
             </div>
@@ -521,27 +638,18 @@ function AppleHealthCard() {
                 {lastImport.rows > 0 ? (
                   <p className="text-xs text-green-500 flex items-center gap-1">
                     <CheckCircle2 size={12} />
-                    {lastImport.rows} days imported{lastImport.labs > 0 ? ` + ${lastImport.labs} lab values` : ""}{lastImport.cleared ? " (sample data cleared)" : ""} at {lastImport.date}
+                    {lastImport.rows} days imported from {lastImport.filesProcessed} file{lastImport.filesProcessed !== 1 ? 's' : ''}{lastImport.labs > 0 ? ` + ${lastImport.labs} lab values` : ''}{lastImport.cleared ? ' (sample data cleared)' : ''} at {lastImport.date}
                   </p>
-                ) : lastImport.totalRows === 0 ? (
-                  // Raw parse failed — show file content diagnostic
-                  <div className="space-y-1.5">
-                    <p className="text-xs text-red-500 font-medium flex items-center gap-1">
-                      <AlertTriangle size={12} /> File "{lastImport.fileName}" could not be parsed as CSV
-                    </p>
-                    <details className="text-xs" open>
-                      <summary className="text-muted-foreground cursor-pointer hover:text-foreground">Raw file preview (first 600 chars)</summary>
-                      <pre className="mt-2 p-2 bg-muted rounded text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all border border-card-border max-h-40">{lastImport.rawPreview}</pre>
-                      <p className="text-muted-foreground mt-1.5">Copy the text above and share it so we can identify the format.</p>
-                    </details>
-                  </div>
                 ) : (
-                  <p className="text-xs text-yellow-500 font-medium">0 rows matched — see column details below</p>
+                  <p className="text-xs text-yellow-500 font-medium flex items-center gap-1"><AlertTriangle size={12}/> 0 days matched — {lastImport.filesProcessed} file{lastImport.filesProcessed !== 1 ? 's' : ''} processed</p>
+                )}
+                {lastImport.skippedFiles.length > 0 && (
+                  <p className="text-xs text-muted-foreground">Skipped (unrecognized): {lastImport.skippedFiles.join(', ')}</p>
                 )}
                 {lastImport.totalRows > 0 && (
                   <details className="text-xs" open={lastImport.rows === 0}>
                     <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
-                      {lastImport.isLongFormat ? "Long-format" : "Wide-format"} · {lastImport.totalRows} rows · {lastImport.cols.length} columns · {lastImport.matchedCols.length} recognized
+                      {lastImport.isLongFormat ? 'Long-format' : 'Wide-format'} · {lastImport.totalRows} date rows · {lastImport.cols.length} columns · {lastImport.matchedCols.length} recognized
                     </summary>
                     <div className="mt-2 flex flex-wrap gap-1">
                       {lastImport.cols.map(col => {
@@ -549,18 +657,13 @@ function AppleHealthCard() {
                         return (
                           <span key={col} className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
                             isMatched
-                              ? "bg-green-500/15 text-green-600 dark:text-green-400 border border-green-500/20"
-                              : "bg-muted text-muted-foreground"
+                              ? 'bg-green-500/15 text-green-600 dark:text-green-400 border border-green-500/20'
+                              : 'bg-muted text-muted-foreground'
                           }`}>{col}</span>
                         );
                       })}
                     </div>
-                    <p className="text-muted-foreground mt-2">
-                      {lastImport.matchedCols.length === 0
-                        ? "No columns matched — your CSV format may differ from expected. Make sure Aggregation = Day."
-                        : `Green = matched to dashboard · Grey = ignored`
-                      }
-                    </p>
+                    <p className="text-muted-foreground mt-2">Green = matched · Grey = ignored</p>
                   </details>
                 )}
               </div>

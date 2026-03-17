@@ -574,7 +574,15 @@ export default function Integrations() {
       queryClient.invalidateQueries({ queryKey: ["/api/health-stats"] });
       toast({ title: "Sync complete", description: data.message });
     },
-    onError: (e: any) => toast({ title: "Sync failed", description: e.message, variant: "destructive" }),
+    onError: (e: any) => {
+      // If token expired, refresh status so UI shows disconnected + reconnect button
+      if (e.message?.includes('expired') || e.message?.includes('401') || e.message?.includes('reconnect')) {
+        queryClient.invalidateQueries({ queryKey: ["/api/integrations/status"] });
+        toast({ title: "Session expired", description: "Please reconnect to resume syncing.", variant: "destructive" });
+      } else {
+        toast({ title: "Sync failed", description: e.message, variant: "destructive" });
+      }
+    },
   });
 
   const disconnectMutation = useMutation({

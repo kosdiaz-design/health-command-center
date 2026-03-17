@@ -131,9 +131,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       storage.getIntegrationToken('oura'),
       storage.getIntegrationToken('withings'),
     ]);
+    // Withings token is considered valid if: no expiry set, OR expiry is in the future, OR has a refresh token
+    const withingsValid = withingsToken
+      ? (!withingsToken.expiresAt || withingsToken.expiresAt > Date.now() || !!withingsToken.refreshToken)
+      : false;
     res.json({
       oura: ouraToken ? { connected: true, connectedAt: ouraToken.connectedAt } : { connected: false },
-      withings: withingsToken ? { connected: true, connectedAt: withingsToken.connectedAt } : { connected: false },
+      withings: withingsToken && withingsValid
+        ? { connected: true, connectedAt: withingsToken.connectedAt }
+        : { connected: false },
       appleHealth: { connected: false, note: "Upload CSV from iPhone Health Export app" },
     });
   });
@@ -300,6 +306,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
       const data = await measRes.json() as any;
       if (data.status !== 0) {
+        // 401 / invalid_token — token is dead, clear it so UI shows as disconnected
+        if (data.status === 401 || data.error === 'invalid_token' || String(data.status) === '401') {
+          await storage.deleteIntegrationToken('withings');
+          return res.status(401).json({ error: "Withings token expired — please reconnect", needsReconnect: true });
+        }
         return res.status(400).json({ error: `Withings API error ${data.status}: ${data.error || 'unknown'}` });
       }
       const groups = data.body?.measuregrps || [];

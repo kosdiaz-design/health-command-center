@@ -13,6 +13,7 @@ import Medications from "@/pages/Medications";
 import HealthRecords from "@/pages/HealthRecords";
 import VoiceNotes from "@/pages/VoiceNotes";
 import Integrations from "@/pages/Integrations";
+import LogEntry from "@/pages/LogEntry";
 import NotFound from "@/pages/not-found";
 
 export default function App() {
@@ -34,6 +35,7 @@ export default function App() {
             <Route path="/health-records" component={HealthRecords} />
             <Route path="/voice-notes" component={VoiceNotes} />
             <Route path="/integrations" component={Integrations} />
+            <Route path="/log" component={LogEntry} />
             <Route component={NotFound} />
           </Switch>
         </Layout>

@@ -2,13 +2,14 @@ import { Link } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import {
   LayoutDashboard, Dumbbell, Flame, UtensilsCrossed,
-  Pill, ClipboardList, Mic, Heart, Moon, Sun, Menu, X, Cable
+  Pill, ClipboardList, Mic, Heart, Moon, Sun, Menu, X, Cable, PenLine
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import PerplexityAttribution from "@/components/PerplexityAttribution";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/log", label: "Daily Log", icon: PenLine },
   { path: "/workouts", label: "Workouts", icon: Dumbbell },
   { path: "/recovery", label: "Sauna & Cold Plunge", icon: Flame },
   { path: "/meals", label: "Meal Planner", icon: UtensilsCrossed },

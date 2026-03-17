@@ -586,11 +586,40 @@ export default function Integrations() {
     },
   });
 
+  const refreshStatus = () => queryClient.invalidateQueries({ queryKey: ["/api/integrations/status"] });
+
+  const openOAuthPopup = (url: string, source: "oura" | "withings") => {
+    const popup = window.open(url, "_blank", "width=600,height=700");
+    const afterConnect = () => {
+      refreshStatus();
+      // Auto-sync immediately after connecting
+      setTimeout(() => {
+        syncMutation.mutate(source);
+        queryClient.invalidateQueries({ queryKey: ["/api/health-stats"] });
+      }, 1500);
+    };
+    // Listen for postMessage from the callback page
+    const onMsg = (e: MessageEvent) => {
+      if (e.data?.type === "oauth-success") {
+        afterConnect();
+        window.removeEventListener("message", onMsg);
+      }
+    };
+    window.addEventListener("message", onMsg);
+    // Fallback: poll until popup closes
+    const poll = setInterval(() => {
+      if (!popup || popup.closed) {
+        clearInterval(poll);
+        window.removeEventListener("message", onMsg);
+        afterConnect();
+      }
+    }, 500);
+  };
+
   const connectOura = async () => {
     try {
       const { url } = await apiRequest("GET", "/api/integrations/oura/auth");
-      window.open(url, "_blank", "width=600,height=700");
-      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["/api/integrations/status"] }), 5000);
+      openOAuthPopup(url, "oura");
     } catch {
       toast({ title: "Cannot connect", description: "Oura API keys not configured. See setup guide below.", variant: "destructive" });
     }
@@ -599,8 +628,7 @@ export default function Integrations() {
   const connectWithings = async () => {
     try {
       const { url } = await apiRequest("GET", "/api/integrations/withings/auth");
-      window.open(url, "_blank", "width=600,height=700");
-      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["/api/integrations/status"] }), 5000);
+      openOAuthPopup(url, "withings");
     } catch {
       toast({ title: "Cannot connect", description: "Withings API keys not configured. See setup guide below.", variant: "destructive" });
     }

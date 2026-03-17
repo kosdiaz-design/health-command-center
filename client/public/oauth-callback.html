@@ -53,6 +53,10 @@
       .then(r => r.json())
       .then(data => {
         if (data.success) {
+          // Notify the opener so it can refresh status immediately
+          if (window.opener) {
+            try { window.opener.postMessage({ type: 'oauth-success', state }, '*'); } catch(e) {}
+          }
           done(true, 'Your data will sync automatically. This window will close shortly.');
         } else {
           const detail = data.detail ? JSON.stringify(data.detail) : '';

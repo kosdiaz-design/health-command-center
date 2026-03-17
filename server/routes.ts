@@ -527,7 +527,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const hrRaw          = pick(row, "Resting Heart Rate (count/min)", "Resting HR (bpm)", "Resting Heart Rate (bpm)");
       const hrvRaw         = pick(row, "Heart Rate Variability (ms)", "HRV (ms)", "HRV SDNN (ms)");
       const stepsRaw       = pick(row, "Step Count (count)", "Steps (count)", "Step Count");
-      const vo2Raw         = pick(row, "VO2 Max (mL/min\u00b7kg)", "VO2Max (mL/min/kg)", "VO2 Max (ml/min/kg)");
+      const vo2Raw         = pick(row, "VO2 Max (mL/min\u00b7kg)", "VO2Max(mL/min\u00b7kg)", "VO2 Max(mL/min\u00b7kg)", "VO2Max (mL/min/kg)", "VO2 Max (ml/min/kg)", "VO2Max(mL/min/kg)");
       const fatRaw         = pick(row, "Body Fat Percentage (%)", "Body Fat (%)");
       const sysRaw         = pick(row, "Blood Pressure Systolic (mmHg)", "Systolic Blood Pressure (mmHg)");
       const diaRaw         = pick(row, "Blood Pressure Diastolic (mmHg)", "Diastolic Blood Pressure (mmHg)");
